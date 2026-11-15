@@ -42,13 +42,14 @@ MAX_LONG = int(os.environ.get("MAX_LONG_PX", "9000"))
 FLOOR_GB = float(os.environ.get("FLOOR_GB", "150"))
 RUN_SECONDS = int(os.environ.get("RUN_MINUTES", "340")) * 60
 RUN_MAX_GB = float(os.environ.get("RUN_MAX_GB", "180"))
-WORKERS = int(os.environ.get("WORKERS", "4"))
+WORKERS = int(os.environ.get("WORKERS", "8"))
 SOURCES = os.environ.get("SOURCES", "nga,met,cleveland,aic").split(",")
 DRY = os.environ.get("DRY_RUN") == "1"
 LIMIT = int(os.environ.get("LIMIT", "0"))  # 0 = no limit (test runs use 50)
 
 T0 = time.time()
 STOP = threading.Event()
+AGAIN = {"yes": False}   # set when a run ends only because its time ran out
 LOCK = threading.Lock()
 S = requests.Session()
 S.headers["User-Agent"] = UA
@@ -500,7 +501,8 @@ class Run:
         if STOP.is_set():
             return True
         if time.time() - T0 > RUN_SECONDS:
-            log("Time is up for this run")
+            log("Time is up for this run - the next run will carry on")
+            AGAIN["yes"] = True
             STOP.set()
         elif self.bytes / 1e9 > RUN_MAX_GB:
             log("Run upload cap reached")
@@ -664,6 +666,8 @@ def main():
                     f.result()
     finally:
         run.save()
+        if AGAIN["yes"] and not DRY and not LIMIT:
+            open("again", "w").write("1")
         log("DONE this run: saved %d | skipped (already have) %d | too small %d | repeats %d | failed %d | %.1f GB"
             % (run.saved, run.skipped, run.small, run.dupes, run.failed, run.bytes / 1e9))
 
