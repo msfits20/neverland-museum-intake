@@ -1,0 +1,37 @@
+name: Museum intake
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"   # every 6 hours; each run picks up where the last stopped
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Stop after this many images (0 = no limit)"
+        default: "0"
+      sources:
+        description: "Which museums, in order"
+        default: "nga,met,cleveland,aic"
+
+concurrency:
+  group: museum-intake
+  cancel-in-progress: false
+
+jobs:
+  intake:
+    if: vars.PAUSED != '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q pillow imagehash requests
+      - name: Download museum art into Google Drive
+        env:
+          GOOGLE_AUTH: ${{ secrets.GOOGLE_AUTH }}
+          LIMIT: ${{ github.event.inputs.limit || '0' }}
+          SOURCES: ${{ github.event.inputs.sources || 'nga,met,cleveland,aic' }}
+          FLOOR_GB: ${{ vars.FLOOR_GB || '150' }}
+          RUN_MINUTES: "330"
+        run: python intake.py
