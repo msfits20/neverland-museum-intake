@@ -402,7 +402,9 @@ def iiif_image(base, w=0, h=0):
     for y in range(0, h, R):
         for x in range(0, w, R):
             rw, rh = min(R, w - x), min(R, h - y)
-            ow, oh = max(1, round(rw * s)), max(1, round(rh * s))
+            ox, oy = round(x * s), round(y * s)
+            ow = max(1, round((x + rw) * s) - ox)
+            oh = max(1, round((y + rh) * s) - oy)
             u = "%s/%d,%d,%d,%d/%d,%d/0/default.jpg" % (base, x, y, rw, rh, ow, oh)
             for i in range(5):
                 try:
@@ -415,7 +417,9 @@ def iiif_image(base, w=0, h=0):
             else:
                 raise RuntimeError("piece failed")
             piece = Image.open(io.BytesIO(r.content)).convert("RGB")
-            out.paste(piece, (round(x * s), round(y * s)))
+            if piece.size != (ow, oh):
+                piece = piece.resize((ow, oh), Image.LANCZOS)
+            out.paste(piece, (ox, oy))
     return out
 
 
@@ -590,7 +594,9 @@ def upgrade_capped(d):
         for ln in lines:
             e = json.loads(ln)
             src = nga.get(e["id"]) if e["src"] == "nga" else None
-            if src and max(e["w"], e["h"]) == 4096 and max(src["w"], src["h"]) > 4096:
+            redo = src and max(src["w"], src["h"]) > 4096 and (
+                max(e["w"], e["h"]) == 4096 or max(src["w"], src["h"]) > MAX_LONG)
+            if redo:
                 artist, tier, name = e["file"].split("/", 2)
                 parent = d.folder((artist, tier))
                 fid = d.find(name, parent)
