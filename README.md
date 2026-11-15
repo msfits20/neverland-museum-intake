@@ -21,5 +21,5 @@ Institute of Chicago into the Google Drive folder **Neverland Museum Intake**.
 (opens? sharp? blown up? heavy compression? borders? biggest sharp print size)
 and records the results in the store database. Its Google permission is
 read-only: it cannot change, move or delete anything in Drive. It runs every
-6 hours in 4 parallel parts and skips files already checked.
+6 hours in 8 parallel parts and skips files already checked.
 `quality_mode.txt`: `sample N` = calibration run, `full` = everything, `off` = stop.

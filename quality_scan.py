@@ -275,7 +275,7 @@ def check(f):
     long_px = max(w, h)
     sharp_in = round(long_px / factor / DPI, 1)
     upscaled = factor >= 2.0
-    has_border = max(bf.values()) >= 0.03
+    has_border = max(bf.values()) >= 0.06
     verdict = "ok"
     if sharp_in < 8:
         verdict = "hide"

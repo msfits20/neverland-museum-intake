@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,6 +31,6 @@ jobs:
         env:
           NEVERLAND_READ: ${{ secrets.NEVERLAND_READ }}
           SHARD: ${{ matrix.shard }}
-          SHARDS: "4"
+          SHARDS: "8"
           RUN_MINUTES: "330"
         run: python quality_scan.py
