@@ -1,0 +1,36 @@
+name: Quality scan (read-only)
+
+on:
+  schedule:
+    - cron: "47 */6 * * *"   # every 6 hours; skips files already scanned
+  push:
+    branches: [main]
+    paths: [quality_mode.txt, quality_scan.py]
+  workflow_dispatch:
+
+concurrency:
+  group: quality-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    if: vars.PAUSED != '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q numpy pillow imagehash requests
+      - name: Check print quality of the Neverland Prints images (read-only)
+        env:
+          NEVERLAND_READ: ${{ secrets.NEVERLAND_READ }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: "4"
+          RUN_MINUTES: "330"
+        run: python quality_scan.py

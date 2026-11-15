@@ -15,3 +15,11 @@ Institute of Chicago into the Google Drive folder **Neverland Museum Intake**.
   (Or Actions → Museum intake → ⋯ → Disable workflow.)
 - **Resume:** set `PAUSED` to `0` (or Enable workflow).
 - A run in progress can be stopped with **Cancel workflow**; nothing is lost.
+
+## Quality scan (read-only)
+`quality_scan.py` checks every image in the **Neverland Prints** Drive folder
+(opens? sharp? blown up? heavy compression? borders? biggest sharp print size)
+and records the results in the store database. Its Google permission is
+read-only: it cannot change, move or delete anything in Drive. It runs every
+6 hours in 4 parallel parts and skips files already checked.
+`quality_mode.txt`: `sample N` = calibration run, `full` = everything, `off` = stop.
