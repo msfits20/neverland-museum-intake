@@ -11,6 +11,9 @@ on:
       sources:
         description: "Which museums, in order"
         default: "nga,met,cleveland,aic"
+      upgrade:
+        description: "One-off: replace the capped 4096px test files (1 = yes)"
+        default: "0"
 
 concurrency:
   group: museum-intake
@@ -34,4 +37,5 @@ jobs:
           SOURCES: ${{ github.event.inputs.sources || 'nga,met,cleveland,aic' }}
           FLOOR_GB: ${{ vars.FLOOR_GB || '150' }}
           RUN_MINUTES: "330"
+          UPGRADE: ${{ github.event.inputs.upgrade || '0' }}
         run: python intake.py

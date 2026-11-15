@@ -290,7 +290,7 @@ def src_nga():
             "src": "nga", "id": r["objectid"], "artist": r["attribution"],
             "title": r["title"], "date": r["displaydate"], "kind": c,
             "w": w, "h": h,
-            "url": im["iiifurl"] + "/full/!%d,%d/0/default.jpg" % (MAX_LONG, MAX_LONG),
+            "url": None, "iiif": im["iiifurl"],
             "page": "https://www.nga.gov/collection/art-object-page.%s.html" % r["objectid"],
             "license": "CC0 (NGA open access)"}))
     rows.sort(key=lambda x: x[0])
@@ -377,17 +377,94 @@ def src_aic():
                 yield {"src": "aic", "id": str(r["id"]), "artist": r.get("artist_title") or "",
                        "title": r.get("title"), "date": r.get("date_display") or "",
                        "kind": t.lower(), "w": int(th.get("width") or 0), "h": int(th.get("height") or 0),
-                       "url": "https://www.artic.edu/iiif/2/%s/full/full/0/default.jpg" % r["image_id"],
+                       "url": None, "iiif": "https://www.artic.edu/iiif/2/%s" % r["image_id"],
                        "page": "https://www.artic.edu/artworks/%s" % r["id"],
                        "license": "CC0 (Art Institute of Chicago)"}
             page += 1
             time.sleep(1)
 
 
+IIIF_TILE = 3800
+
+
+def iiif_image(base, w=0, h=0):
+    """Full-resolution image from a IIIF server that caps output size:
+    request it in pieces at full (or MAX_LONG-scaled) resolution and stitch."""
+    hdr = {"AIC-User-Agent": UA}
+    if not (w and h):
+        j = get_json(base + "/info.json", headers=hdr)
+        if not j:
+            raise RuntimeError("no info.json")
+        w, h = int(j["width"]), int(j["height"])
+    s = min(1.0, MAX_LONG / max(w, h))
+    R = int(IIIF_TILE / s)                    # source pixels per piece
+    out = Image.new("RGB", (round(w * s), round(h * s)))
+    for y in range(0, h, R):
+        for x in range(0, w, R):
+            rw, rh = min(R, w - x), min(R, h - y)
+            ow, oh = max(1, round(rw * s)), max(1, round(rh * s))
+            u = "%s/%d,%d,%d,%d/%d,%d/0/default.jpg" % (base, x, y, rw, rh, ow, oh)
+            for i in range(5):
+                try:
+                    r = S.get(u, headers=hdr, timeout=300)
+                    if r.status_code == 200:
+                        break
+                except requests.RequestException:
+                    pass
+                time.sleep(2 ** i)
+            else:
+                raise RuntimeError("piece failed")
+            piece = Image.open(io.BytesIO(r.content)).convert("RGB")
+            out.paste(piece, (round(x * s), round(y * s)))
+    return out
+
+
 SRC = {"nga": src_nga, "met": src_met, "cleveland": src_cleveland, "aic": src_aic}
 
 
 # ----------------------------------------------------------------- main --
+def fetch_image(it):
+    """Returns (image, original jpeg bytes or None)."""
+    if it.get("iiif"):
+        return iiif_image(it["iiif"], it.get("w") if it["src"] == "nga" else 0,
+                          it.get("h") if it["src"] == "nga" else 0), None
+    r = S.get(it["url"], timeout=600)
+    if r.status_code != 200:
+        raise RuntimeError("HTTP %s" % r.status_code)
+    im = Image.open(io.BytesIO(r.content))
+    im.load()
+    jpeg = r.content if r.headers.get("Content-Type", "").startswith("image/jpeg") else None
+    return im, jpeg
+
+
+def finish(im, data):
+    """RGB, at most MAX_LONG px; re-encode only when needed."""
+    if im.mode not in ("RGB", "L"):
+        im = im.convert("RGB")
+        data = None
+    w, h = im.size
+    if max(w, h) > MAX_LONG:
+        s = MAX_LONG / max(w, h)
+        im = im.resize((round(w * s), round(h * s)), Image.LANCZOS)
+        data = None
+    if data is None:
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=92, optimize=True)
+        data = buf.getvalue()
+    return im, data
+
+
+def tier_of(w, h):
+    big = min(w, h) >= TIER_W and max(w, h) >= TIER_H
+    return ("Above %dx%d" if big else "Below %dx%d") % (TIER_W, TIER_H)
+
+
+def file_name(title, date, w, h):
+    y = year_of(date)
+    t = re.sub(r"\(\s*\)", "", safe(title, 140)).strip() or "Untitled"
+    return "%s%s_%dx%d.jpg" % (t, (" " + y) if y and y not in t else "", w, h)
+
+
 class Run:
     def __init__(self, drive, known):
         self.d, self.known = drive, known
@@ -455,11 +532,7 @@ class Run:
                 self.saved += 1
             return
         try:
-            r = S.get(it["url"], timeout=600)
-            if r.status_code != 200:
-                raise RuntimeError("HTTP %s" % r.status_code)
-            im = Image.open(io.BytesIO(r.content))
-            im.load()
+            im, data = fetch_image(it)
         except Exception as e:
             with LOCK:
                 self.failed += 1
@@ -471,17 +544,8 @@ class Run:
                 done.add(it["id"])
                 self.small += 1
             return
-        if im.mode not in ("RGB", "L"):
-            im = im.convert("RGB")
-        data = r.content
-        if max(w, h) > MAX_LONG or not r.headers.get("Content-Type", "").startswith("image/jpeg"):
-            if max(w, h) > MAX_LONG:
-                s = MAX_LONG / max(w, h)
-                im = im.resize((round(w * s), round(h * s)), Image.LANCZOS)
-                w, h = im.size
-            buf = io.BytesIO()
-            im.save(buf, "JPEG", quality=92, optimize=True)
-            data = buf.getvalue()
+        im, data = finish(im, data)
+        w, h = im.size
         ph = str(imagehash.phash(im.convert("L").resize((256, 256))))
         with LOCK:
             if ph in self.phash:
@@ -490,10 +554,8 @@ class Run:
                 return
             self.phash.add(ph)
         artist = safe(it["artist"] or "Unknown Artist", 80)
-        tier = "Above %dx%d" % (TIER_W, TIER_H) if (min(w, h) >= TIER_W and max(w, h) >= TIER_H) else "Below %dx%d" % (TIER_W, TIER_H)
-        y = year_of(it["date"])
-        title = safe(it["title"], 140)
-        name = "%s%s_%dx%d.jpg" % (title, (" " + y) if y and y not in title else "", w, h)
+        tier = tier_of(w, h)
+        name = file_name(it["title"], it["date"], w, h)
         parent = self.d.folder((artist, tier))
         if not self.d.find(name, parent):
             self.d.upload(name, parent, data)
@@ -514,6 +576,45 @@ class Run:
                 % (self.saved, self.skipped, self.small, self.dupes, self.failed, self.bytes / 1e9))
 
 
+def upgrade_capped(d):
+    """One-off: the first NGA test files came down capped at 4,096 px.
+    Replace their content in place with the full-resolution version."""
+    nga = {x["id"]: x for x in src_nga()}
+    r = d.req("GET", d.API + "/files", params={
+        "q": "'%s' in parents and name contains 'log-' and trashed = false" % d.state_dir,
+        "fields": "files(id,name)", "pageSize": 1000}).json()
+    fixed = 0
+    for f in r.get("files", []):
+        lines = d.req("GET", d.API + "/files/" + f["id"], params={"alt": "media"}).text.splitlines()
+        out, changed = [], False
+        for ln in lines:
+            e = json.loads(ln)
+            src = nga.get(e["id"]) if e["src"] == "nga" else None
+            if src and max(e["w"], e["h"]) == 4096 and max(src["w"], src["h"]) > 4096:
+                artist, tier, name = e["file"].split("/", 2)
+                parent = d.folder((artist, tier))
+                fid = d.find(name, parent)
+                if fid:
+                    im, data = finish(iiif_image(src["iiif"], src["w"], src["h"]), None)
+                    w, h = im.size
+                    nt, nn = tier_of(w, h), file_name(src["title"], src["date"], w, h)
+                    np_ = d.folder((artist, nt))
+                    params = {"uploadType": "media"}
+                    if np_ != parent:
+                        params.update(addParents=np_, removeParents=parent)
+                    d.req("PATCH", d.UP + "/" + fid, params=params, data=data,
+                          headers={"Content-Type": "image/jpeg"})
+                    d.req("PATCH", d.API + "/files/" + fid, json={"name": nn})
+                    e.update(file="%s/%s/%s" % (artist, nt, nn), w=w, h=h, bytes=len(data))
+                    changed, fixed = True, fixed + 1
+                    log("  upgraded", nn)
+            out.append(json.dumps(e))
+        if changed:
+            d.req("PATCH", d.UP + "/" + f["id"], params={"uploadType": "media"},
+                  data="\n".join(out).encode(), headers={"Content-Type": "application/json"})
+    log("Upgraded %d capped files" % fixed)
+
+
 def main():
     if os.environ.get("PAUSED") == "1":
         log("Paused (repository variable PAUSED=1). Nothing to do.")
@@ -529,6 +630,9 @@ def main():
             log("Not enough Drive space - not starting.")
             return
     d.setup_root()
+    if os.environ.get("UPGRADE") == "1":
+        upgrade_capped(d)
+        return
     run = Run(d, known)
     run.load()
     last_check = time.time()
