@@ -378,6 +378,19 @@ def main():
             except Exception:
                 items.append((Image.new("RGB", (200, 200), "grey"), "OURS (no preview)"))
         sheet(items, "Look-alike pairs, least similar first (new | ours)", "calibration/s%d_dupes.jpg" % SHARD)
+        rep = [x for x in results if x[0]["hold_reason"] == "repeat of download"][:20]
+        items = []
+        path_of = {f["id"]: f["path"] for f in imgs}
+        for r, t in rep:
+            items.append((t, "HELD %s" % r["title"]))
+            try:
+                j = d.req("GET", d.API + "/files/" + r["duplicate_of"], params={"fields": "thumbnailLink"}).json()
+                tr = d.req("GET", j["thumbnailLink"].replace("=s220", "=s400"))
+                items.append((Image.open(io.BytesIO(tr.content)).convert("RGB"),
+                              "KEPT %s" % path_of.get(r["duplicate_of"], "?").split("/")[-1]))
+            except Exception:
+                items.append((Image.new("RGB", (200, 200), "grey"), "KEPT (no preview)"))
+        sheet(items, "Repeats among downloads (held | kept)", "calibration/s%d_repeats.jpg" % SHARD)
         with open("calibration/s%d_rows.jsonl" % SHARD, "w") as fh:
             for r, _ in results:
                 fh.write(json.dumps(r) + "\n")
