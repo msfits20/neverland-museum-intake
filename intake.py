@@ -574,7 +574,7 @@ class Run:
         if self.cat:
             try:
                 cph = str(imagehash.phash(im))      # same method as the catalog scan
-                match = self.cat.best(cph, surname(it["artist"]))
+                match = self.cat.best(cph, surname(it["artist"]), catalog_mod.title_words(norm(it["title"])))
             except Exception as e:
                 log("  catalog check skipped:", str(e)[:80])
         if match and not catalog_mod.upgrade_over(match, w, h):
@@ -682,7 +682,7 @@ def main():
         return
     cat = None
     try:
-        cat = catalog_mod.load(surname, keys)
+        cat = catalog_mod.load(surname, keys, norm)
         if cat:
             log("Catalog fingerprints: %d (weak copies: %d)" % (len(cat), int(cat.weak.sum())))
     except Exception as e:

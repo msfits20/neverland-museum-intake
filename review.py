@@ -121,21 +121,22 @@ def intake_repeats(imgs, entries):
         e = entries.get(f["path"])
         if e and e.get("phash"):
             rows.append((f["id"], int(e["phash"], 16), int(e["w"]) * int(e["h"]),
-                         intake.surname(e.get("artist"))))
+                         intake.surname(e.get("artist")),
+                         catalog_mod.title_words(intake.norm(e.get("title")))))
     if not rows:
         return {}
     ids = [r[0] for r in rows]
     h = np.array([r[1] for r in rows], dtype=np.uint64)
     px = np.array([r[2] for r in rows])
     sur = [r[3] for r in rows]
+    words = [r[4] for r in rows]
     loser = {}
     for i in range(len(rows)):
         d = np.bitwise_count(h ^ h[i])
         for j in np.nonzero(d <= catalog_mod.NEAR_BITS)[0]:
             if j == i:
                 continue
-            same = d[j] <= catalog_mod.SAME_BITS or (sur[i] and sur[i] == sur[j])
-            if not same:
+            if not catalog_mod.same_artwork(int(d[j]), sur[i], sur[j], words[i], words[j]):
                 continue
             # i loses to j if j is bigger, or same size and j's id sorts first
             if px[j] > px[i] or (px[j] == px[i] and ids[j] < ids[i]):
@@ -246,7 +247,8 @@ def check(d, f, e, cat, loser, missing, frames):
     fs = frames.score(small) if frames else None
     row.update(width_px=w, height_px=h, phash=ph)
     q.update(jpeg_quality=jq, upscale_factor=factor, max_sharp_long_in=sharp_in, frame_score=fs)
-    match = cat.best(ph, intake.surname(row["artist"])) if cat else None
+    match = cat.best(ph, intake.surname(row["artist"]),
+                     catalog_mod.title_words(intake.norm(row["title"]))) if cat else None
     if match:
         q["catalog_match"] = match
     upgrade = catalog_mod.upgrade_over(match, w / factor, h / factor)
@@ -306,7 +308,7 @@ def main():
     d = intake.Drive()
     d.setup_root()
     imgs, entries = inventory(d)
-    cat = catalog_mod.load(intake.surname, intake.keys)
+    cat = catalog_mod.load(intake.surname, intake.keys, intake.norm)
     log("catalog fingerprints: %d" % len(cat))
     loser = intake_repeats(imgs, entries)
     with gzip.open(os.path.join(os.path.dirname(__file__), "missing_artvee_titles.txt.gz"), "rt") as fh:
