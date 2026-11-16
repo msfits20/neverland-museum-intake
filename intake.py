@@ -728,6 +728,27 @@ def legacy_busy_with(d):
         return None
 
 
+SHARE_WITH = os.environ.get("SHARE_WITH", "neverland-drive-reader@neverland-prints.iam.gserviceaccount.com")
+
+
+def share_with_backend(d):
+    """The store's backend reads product images by Drive file id. Give its service account
+    view access to this folder (Tobi, 16 Nov 2026), so new products show their pictures."""
+    if not SHARE_WITH:
+        return
+    try:
+        perms = d.req("GET", d.API + "/files/%s/permissions" % d.root,
+                      params={"fields": "permissions(emailAddress,role)"}).json().get("permissions", [])
+        if any((p.get("emailAddress") or "").lower() == SHARE_WITH.lower() for p in perms):
+            return
+        r = d.req("POST", d.API + "/files/%s/permissions" % d.root,
+                  params={"sendNotificationEmail": "false"},
+                  json={"type": "user", "role": "reader", "emailAddress": SHARE_WITH})
+        log("Shared the intake folder with the store backend (view only):", r.status_code)
+    except Exception as e:
+        log("Sharing with the backend failed:", str(e)[:120])
+
+
 ORDER = ["nga", "met", "cleveland", "aic"]
 
 
@@ -758,6 +779,7 @@ def main():
             log("Not enough Drive space - not starting.")
             return
     d.setup_root()
+    share_with_backend(d)
     if STATE_FILE != "state.json":
         busy = legacy_blocks(d)
         if busy:
