@@ -115,7 +115,7 @@ def warn_low_space(free):
     tok, repo = os.environ.get("GITHUB_TOKEN"), os.environ.get("GITHUB_REPOSITORY")
     if not tok or not repo or free >= WARN_GB or (len(SOURCES) == 1 and SOURCES[0] != "nga"):
         return
-    title = "Drive space low: time to upgrade storage"
+    title = "Drive space low: museum downloads will pause soon"
     h = {"Authorization": "Bearer " + tok, "Accept": "application/vnd.github+json"}
     try:
         r = requests.get("https://api.github.com/repos/%s/issues" % repo,
@@ -125,8 +125,8 @@ def warn_low_space(free):
         requests.post("https://api.github.com/repos/%s/issues" % repo, headers=h, timeout=30, json={
             "title": title,
             "body": ("Google Drive has %.0f GB free. The museum download pauses by itself at %.0f GB.\n\n"
-                     "Buy the 10 TB plan (Google One) and the job carries on at its next run; nothing else "
-                     "to do. Close this issue once storage is upgraded." % (free, FLOOR_GB))})
+                     "Nothing to do: it stops by itself at the floor. If you add storage later, the job "
+                     "carries on at its next run." % (free, FLOOR_GB))})
         log("Low-space warning issue opened")
     except Exception as e:
         log("Low-space warning failed:", str(e)[:120])
