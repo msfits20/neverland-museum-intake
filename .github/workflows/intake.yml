@@ -9,8 +9,8 @@ on:
         description: "Stop after this many images (0 = no limit)"
         default: "0"
       sources:
-        description: "Which museums, in order"
-        default: "nga,met,cleveland,aic"
+        description: "(unused: each museum runs as its own part)"
+        default: ""
       upgrade:
         description: "One-off: replace the capped 4096px test files (1 = yes)"
         default: "0"
@@ -29,6 +29,10 @@ jobs:
     if: vars.PAUSED != '1'
     runs-on: ubuntu-latest
     timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [nga, met, cleveland, aic]   # 16 Nov 2026: the four museums download side by side
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -41,7 +45,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEVERLAND_READ: ${{ secrets.NEVERLAND_READ }}
           LIMIT: ${{ github.event.inputs.limit || '0' }}
-          SOURCES: ${{ github.event.inputs.sources || 'nga,met,cleveland,aic' }}
+          SOURCES: ${{ matrix.part }}
+          STATE_FILE: state-${{ matrix.part }}.json
+          WORKERS: "10"
           FLOOR_GB: ${{ vars.FLOOR_GB || '150' }}
           RUN_MINUTES: "330"
           UPGRADE: ${{ github.event.inputs.upgrade || '0' }}

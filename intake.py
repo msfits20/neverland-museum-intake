@@ -48,6 +48,7 @@ FLOOR_GB = float(os.environ.get("FLOOR_GB", "150"))
 RUN_SECONDS = int(os.environ.get("RUN_MINUTES", "340")) * 60
 RUN_MAX_GB = float(os.environ.get("RUN_MAX_GB", "180"))
 WORKERS = int(os.environ.get("WORKERS", "8"))
+STATE_FILE = os.environ.get("STATE_FILE", "state.json")
 SOURCES = os.environ.get("SOURCES", "nga,met,cleveland,aic").split(",")
 DRY = os.environ.get("DRY_RUN") == "1"
 LIMIT = int(os.environ.get("LIMIT", "0"))  # 0 = no limit (test runs use 50)
@@ -112,7 +113,7 @@ def warn_low_space(free):
     """Open one GitHub issue when Drive space runs low, so Tobi gets an email in time
     to upgrade storage before the job pauses at FLOOR_GB."""
     tok, repo = os.environ.get("GITHUB_TOKEN"), os.environ.get("GITHUB_REPOSITORY")
-    if not tok or not repo or free >= WARN_GB:
+    if not tok or not repo or free >= WARN_GB or (len(SOURCES) == 1 and SOURCES[0] != "nga"):
         return
     title = "Drive space low: time to upgrade storage"
     h = {"Authorization": "Bearer " + tok, "Accept": "application/vnd.github+json"}
@@ -513,7 +514,10 @@ class Run:
         self.since_save = 0
 
     def load(self):
-        st = self.d.read_json("state.json", {})
+        # One state file per parallel part (16 Nov 2026); the first time, start from the shared one.
+        st = self.d.read_json(STATE_FILE, None)
+        if st is None:
+            st = self.d.read_json("state.json", {})
         self.state = {k: set(v) for k, v in st.get("done", {}).items()}
         self.phash = set(st.get("phash", []))
         self.keys_new = set(st.get("keys", []))
@@ -526,9 +530,9 @@ class Run:
                    "weakchk": sorted(self.weakchk),
                    "updated": time.strftime("%Y-%m-%d %H:%M:%S")}
             logs, self.log = self.log, []
-        self.d.write_json("state.json", obj)
+        self.d.write_json(STATE_FILE, obj)
         if logs:
-            name = "log-%s.jsonl" % time.strftime("%Y%m%d-%H%M%S")
+            name = "log-%s-%s.jsonl" % (time.strftime("%Y%m%d-%H%M%S"), STATE_FILE.replace(".json", ""))
             self.d.upload(name, self.d.state_dir, "\n".join(json.dumps(x) for x in logs).encode(), "application/json")
 
     def should_stop(self):

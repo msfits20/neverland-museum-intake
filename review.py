@@ -212,6 +212,9 @@ class FrameModel:
         return round(float(p[:len(self.FRAMED)].sum()), 3)
 
 
+ARTVEE_NEW = set()
+
+
 def check(d, f, e, cat, loser, missing, frames):
     row = {"drive_file_id": f["id"], "filename": f["name"], "filepath": f["path"],
            "file_size_bytes": int(f.get("size") or 0),
@@ -255,8 +258,11 @@ def check(d, f, e, cat, loser, missing, frames):
     if upgrade:
         q["upgrade_for"] = match["id"]
     t = intake.norm(row["title"])
-    if len(t.split()) >= 3 and hashlib.sha1(t.encode()).hexdigest()[:12] in missing:
+    th = hashlib.sha1(t.encode()).hexdigest()[:12] if len(t.split()) >= 3 else None
+    if th and th in missing:
         q["fills_missing_artvee"] = True
+    if th and th in ARTVEE_NEW:
+        q["artvee_new"] = True  # an Artvee artwork we don't have yet, got free from the museum
     if sharp_in < 8:
         row.update(status="held", hold_reason="too soft")
     elif fs is not None and fs >= FRAME_T:
@@ -318,6 +324,15 @@ def main():
     loser = intake_repeats(imgs, entries)
     with gzip.open(os.path.join(os.path.dirname(__file__), "missing_artvee_titles.txt.gz"), "rt") as fh:
         missing = set(fh.read().split())
+    with gzip.open(os.path.join(os.path.dirname(__file__), "artvee_new_titles.txt.gz"), "rt") as fh:
+        ARTVEE_NEW.update(fh.read().split())
+    if SHARD == 0:
+        hit = 0
+        for f in imgs:
+            t = intake.norm((entries.get(f["path"]) or {}).get("title") or f["name"])
+            if len(t.split()) >= 3 and hashlib.sha1(t.encode()).hexdigest()[:12] in ARTVEE_NEW:
+                hit += 1
+        log("Artvee artworks we didn't have, found free among %d downloads: %d" % (len(imgs), hit))
     done = set() if REDO or CALIBRATE else {r["drive_file_id"] for r in catalog_mod.rpc_all(CFG, "intake_queue_ids")}
     mine = [f for f in imgs if f["id"] not in done
             and int(hashlib.md5(f["id"].encode()).hexdigest(), 16) % SHARDS == SHARD]
