@@ -142,7 +142,7 @@ def intake_repeats(imgs, entries):
             if px[j] > px[i] or (px[j] == px[i] and ids[j] < ids[i]):
                 loser[ids[i]] = (ids[j], int(d[j]))
                 break
-    log("repeats among downloads: %d" % len(loser))
+    log("repeat candidates among downloads (before the detail check): %d" % len(loser))
     return loser
 
 
@@ -265,10 +265,10 @@ def check(d, f, e, cat, loser, missing, frames):
         row.update(status="held", hold_reason="already in catalog", duplicate_of=match["id"])
     elif f["id"] in loser:
         other, dist = loser[f["id"]]
-        cd = 0 if dist <= catalog_mod.SAME_BITS else catalog_mod.confirmed(
-            cat.prev if cat else None, catalog_mod.center_hash(rgb), other)
-        q["repeat_of"] = {"id": other, "dist": dist, "center": cd}
-        if cd is not None and cd <= catalog_mod.CENTER_BITS:
+        cd = {"ok": True} if dist <= catalog_mod.SAME_BITS else catalog_mod.confirmed(
+            cat.prev if cat else None, catalog_mod.small(rgb), other)
+        q["repeat_of"] = {"id": other, "dist": dist, "details": cd}
+        if cd and (cd["ok"] or os.environ.get("CALIBRATE_ALL") == "1"):
             row.update(status="held", hold_reason="repeat of download", duplicate_of=other)
     return row, small
 
@@ -377,7 +377,8 @@ def main():
         items = []
         for r, t in dup[:24]:
             m = r["quality"]["catalog_match"]
-            items.append((t, "NEW d%d c%s %s" % (m["dist"], m.get("center"), r["title"])))
+            c = m.get("details") or {}
+            items.append((t, "NEW d%d %s/%s %s" % (m["dist"], c.get("inliers", "-"), c.get("ratio", "-"), r["title"])))
             try:
                 items.append((catalog_thumb(m["id"]), "OURS %s" % m["file"].split("/")[-1]))
             except Exception:
@@ -387,7 +388,8 @@ def main():
         items = []
         path_of = {f["id"]: f["path"] for f in imgs}
         for r, t in rep:
-            items.append((t, "HELD c%s %s" % (r["quality"]["repeat_of"]["center"], r["title"])))
+            c = r["quality"]["repeat_of"]["details"] or {}
+            items.append((t, "HELD %s/%s %s" % (c.get("inliers", "-"), c.get("ratio", "-"), r["title"])))
             try:
                 j = d.req("GET", d.API + "/files/" + r["duplicate_of"], params={"fields": "thumbnailLink"}).json()
                 tr = d.req("GET", j["thumbnailLink"].replace("=s220", "=s400"))

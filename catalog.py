@@ -14,9 +14,11 @@ Rules (64-bit pHash, distance = number of differing bits), calibrated on
 At 5-6 bits with nothing else in common, mostly-blank paper prints were
 false matches, so a name or title clue is required there. Series by one
 artist on blank paper (carriage designs, natural-history plates) still
-fooled that, so every match above SAME_BITS is confirmed by a second
-fingerprint of the middle of both pictures (margins and paper cut away),
-taken from Drive's small preview of the other file (read-only).
+fooled that, so every match above SAME_BITS is confirmed by matching
+details: ORB feature points of both pictures (the other one from Drive's
+preview, read-only) must line up under one shift/scale/rotation. On the
+16 Nov calibration, true pairs lined up at 0.74-0.99 of matched points,
+different pictures at 0.50 or less.
 A catalog copy is "weak" when the quality scan marked it limit_sizes or
 hide. A new copy that prints clearly bigger is an upgrade, not a duplicate.
 """
@@ -39,15 +41,37 @@ STOP_WORDS = set("the and with from for after study studies portrait view untitl
                  "head woman man landscape scene part sketch title page der die das und von des les une with "
                  "dans sur zum zur".split())
 DPI = 150
-CENTER_BITS = int(os.environ.get("CENTER_BITS", "14"))
+PREVIEW = 800
 
 
-def center_hash(im):
-    """pHash of the middle 60% of a 400px version (paper and margins cut away)."""
+def small(im):
     t = im.convert("L")
-    t.thumbnail((400, 400))
-    w, h = t.size
-    return imagehash.phash(t.crop((int(w * .2), int(h * .2), int(w * .8), int(h * .8))))
+    t.thumbnail((PREVIEW, PREVIEW))
+    return t
+
+
+def details_match(a, b):
+    """a, b: small grayscale PIL images. Returns (inliers, ratio)."""
+    import cv2
+    A, B = np.asarray(a), np.asarray(b)
+    orb = cv2.ORB_create(1500)
+    ka, da = orb.detectAndCompute(A, None)
+    kb, db = orb.detectAndCompute(B, None)
+    if da is None or db is None or len(ka) < 8 or len(kb) < 8:
+        return 0, 0.0
+    m = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(da, db, k=2)
+    good = [x[0] for x in m if len(x) == 2 and x[0].distance < 0.8 * x[1].distance]
+    if len(good) < 8:
+        return 0, 0.0
+    pa = np.float32([ka[g.queryIdx].pt for g in good])
+    pb = np.float32([kb[g.trainIdx].pt for g in good])
+    _, mask = cv2.estimateAffinePartial2D(pa, pb, method=cv2.RANSAC, ransacReprojThreshold=4)
+    inl = int(mask.sum()) if mask is not None else 0
+    return inl, round(inl / len(good), 3)
+
+
+def details_ok(inl, ratio):
+    return (inl >= 40 and ratio >= 0.6) or (inl >= 12 and ratio >= 0.85)
 
 
 class Previews:
@@ -76,7 +100,7 @@ class Previews:
                 link = j.get("thumbnailLink")
                 if not link:
                     return None
-                r = requests.get(link.split("=s")[0] + "=s400", headers=h, timeout=60)
+                r = requests.get(link.split("=s")[0] + "=s%d" % PREVIEW, headers=h, timeout=60)
                 if r.status_code == 200:
                     return Image.open(io.BytesIO(r.content)).convert("RGB")
             except Exception:
@@ -84,25 +108,18 @@ class Previews:
             time.sleep(2 ** i)
         return None
 
-    def center(self, file_id):
-        with self.lock:
-            if file_id in self.cache:
-                return self.cache[file_id]
-        im = self.image(file_id)
-        c = center_hash(im) if im is not None else None
-        with self.lock:
-            self.cache[file_id] = c
-        return c
 
 
-def confirmed(prev, new_center, other_id):
-    """None when it can't be checked (no preview): treated as not confirmed."""
-    if prev is None or new_center is None:
+def confirmed(prev, new_small, other_id):
+    """{"inliers", "ratio", "ok"}; None when it can't be checked (no preview),
+    which counts as not confirmed."""
+    if prev is None or new_small is None:
         return None
-    c = prev.center(other_id)
-    if c is None:
+    other = prev.image(other_id)
+    if other is None:
         return None
-    return int(new_center - c)
+    inl, ratio = details_match(new_small, small(other))
+    return {"inliers": inl, "ratio": ratio, "ok": details_ok(inl, ratio)}
 
 
 def _rpc(cfg, fn, **args):
@@ -168,9 +185,9 @@ class Catalog:
 
     def best(self, ph, artist_surname, words=frozenset(), image=None):
         """Closest catalog match that counts as the same artwork, or None.
-        Returns dict(id, dist, weak, sharp_in, kind, center).
+        Returns dict(id, dist, weak, sharp_in, kind, details).
         image: the new picture, for the middle-of-picture confirmation."""
-        new_center = center_hash(image) if image is not None else None
+        new_small = small(image) if image is not None else None
         d = np.bitwise_count(self.h ^ hex64(ph))
         cand = np.nonzero(d <= NEAR_BITS)[0]
         if not len(cand):
@@ -184,11 +201,11 @@ class Catalog:
             r = self.rows[i]
             cd = None
             if dist > SAME_BITS:
-                cd = confirmed(self.prev, new_center, r["drive_file_id"])
-                if cd is None or cd > CENTER_BITS:
+                cd = confirmed(self.prev, new_small, r["drive_file_id"])
+                if not (cd and (cd["ok"] or os.environ.get("CALIBRATE_ALL") == "1")):
                     continue
             m = {"id": r["drive_file_id"], "dist": dist, "weak": bool(self.weak[i]),
-                 "sharp_in": float(r.get("sharp_in") or 0), "kind": kind, "center": cd,
+                 "sharp_in": float(r.get("sharp_in") or 0), "kind": kind, "details": cd,
                  "file": "%s/%s" % (r.get("path"), r.get("name"))}
             if best is None:
                 best = m

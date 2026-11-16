@@ -14,9 +14,9 @@ on:
       frame_t:
         description: "Frame score at which a picture is held"
         default: "0.6"
-      center_bits:
-        description: "Middle-of-picture fingerprint distance that confirms a look-alike"
-        default: "14"
+      calibrate_all:
+        description: "Calibration only: keep look-alikes that fail the detail check, to see them (1 = yes)"
+        default: "0"
 
 permissions:
   contents: write
@@ -41,7 +41,7 @@ jobs:
           python-version: "3.12"
       - run: |
           pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          pip install -q open_clip_torch numpy pillow imagehash requests
+          pip install -q open_clip_torch numpy pillow imagehash requests opencv-python-headless
       - name: Review downloaded museum images (nothing in Drive is changed)
         env:
           GOOGLE_AUTH: ${{ secrets.GOOGLE_AUTH }}
@@ -51,7 +51,7 @@ jobs:
           CALIBRATE: ${{ github.event.inputs.calibrate || '0' }}
           REDO: ${{ github.event.inputs.redo || '0' }}
           FRAME_T: ${{ github.event.inputs.frame_t || '0.6' }}
-          CENTER_BITS: ${{ github.event.inputs.center_bits || '14' }}
+          CALIBRATE_ALL: ${{ github.event.inputs.calibrate_all || '0' }}
           RUN_MINUTES: "300"
         run: python review.py
       - if: github.event.inputs.calibrate && github.event.inputs.calibrate != '0'
