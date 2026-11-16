@@ -174,7 +174,10 @@ class Catalog:
         self.h = np.array([int(r["phash"], 16) for r in rows], dtype=np.uint64)
         self.sur = [surname((r.get("path") or "").split("/")[0]) for r in rows]
         self.words = [title_words(norm(r.get("name") or "")) if norm else set() for r in rows]
-        self.weak = np.array([r.get("verdict") in ("limit_sizes", "hide") for r in rows])
+        # "weak" = worth replacing with a bigger copy: the scan marked it limit_sizes/hide, or
+        # (Tobi, 16 Nov 2026) it can't print as big as our largest sizes (UPGRADE_BELOW_IN).
+        self.weak = np.array([r.get("verdict") in ("limit_sizes", "hide")
+                              or float(r.get("sharp_in") or 0) < UPGRADE_BELOW_IN for r in rows])
         self.weak_keys = set()
         for r, w in zip(rows, self.weak):
             if w:
@@ -214,11 +217,15 @@ class Catalog:
         return best
 
 
+UPGRADE_BELOW_IN = float(os.environ.get("UPGRADE_BELOW_IN", "48"))
+MAX_SALE_IN = 60.0   # biggest size we sell (40x60 in); printing bigger than that gains nothing
+
+
 def upgrade_over(match, w, h):
-    """True when a new w x h image prints clearly bigger than a weak catalog copy."""
+    """True when a new w x h image prints clearly bigger than our copy (sizes we can sell)."""
     if not match or not match["weak"]:
         return False
-    new_in = max(w, h) / DPI
+    new_in = min(max(w, h) / DPI, MAX_SALE_IN)
     return new_in >= match["sharp_in"] * 1.3 + 4
 
 
