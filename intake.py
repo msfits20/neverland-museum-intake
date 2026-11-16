@@ -105,6 +105,32 @@ def safe(s, n=150):
     return s[:n].strip() or "Untitled"
 
 
+WARN_GB = float(os.environ.get("WARN_GB", "400"))
+
+
+def warn_low_space(free):
+    """Open one GitHub issue when Drive space runs low, so Tobi gets an email in time
+    to upgrade storage before the job pauses at FLOOR_GB."""
+    tok, repo = os.environ.get("GITHUB_TOKEN"), os.environ.get("GITHUB_REPOSITORY")
+    if not tok or not repo or free >= WARN_GB:
+        return
+    title = "Drive space low: time to upgrade storage"
+    h = {"Authorization": "Bearer " + tok, "Accept": "application/vnd.github+json"}
+    try:
+        r = requests.get("https://api.github.com/repos/%s/issues" % repo,
+                         params={"state": "open", "per_page": 100}, headers=h, timeout=30)
+        if any(i.get("title") == title for i in r.json()):
+            return
+        requests.post("https://api.github.com/repos/%s/issues" % repo, headers=h, timeout=30, json={
+            "title": title,
+            "body": ("Google Drive has %.0f GB free. The museum download pauses by itself at %.0f GB.\n\n"
+                     "Buy the 10 TB plan (Google One) and the job carries on at its next run; nothing else "
+                     "to do. Close this issue once storage is upgraded." % (free, FLOOR_GB))})
+        log("Low-space warning issue opened")
+    except Exception as e:
+        log("Low-space warning failed:", str(e)[:120])
+
+
 def year_of(s):
     m = re.search(r"\b(1[0-9]{3}|20[0-2][0-9])\b", str(s or ""))
     return m.group(1) if m else ""
@@ -682,6 +708,7 @@ def main():
     if not DRY:
         free = d.free_gb()
         log("Drive free space: %.0f GB (stops at %.0f GB)" % (free, FLOOR_GB))
+        warn_low_space(free)
         if free < FLOOR_GB:
             log("Not enough Drive space - not starting.")
             return

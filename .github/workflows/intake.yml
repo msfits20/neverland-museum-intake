@@ -18,6 +18,7 @@ on:
 permissions:
   contents: read
   actions: write
+  issues: write
 
 concurrency:
   group: museum-intake
@@ -37,6 +38,7 @@ jobs:
       - name: Download museum art into Google Drive
         env:
           GOOGLE_AUTH: ${{ secrets.GOOGLE_AUTH }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEVERLAND_READ: ${{ secrets.NEVERLAND_READ }}
           LIMIT: ${{ github.event.inputs.limit || '0' }}
           SOURCES: ${{ github.event.inputs.sources || 'nga,met,cleveland,aic' }}

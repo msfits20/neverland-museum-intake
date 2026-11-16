@@ -1,0 +1,268 @@
+From 20128b13abd9828eaaa1c71ac1b4b089268a5a5a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 16 Nov 2026 20:52:29 +0100
+Subject: [PATCH] Promote reviewed museum downloads into the catalog (off until
+ INTAKE_PROMOTE_ON=1)
+
+- src/scripts/promote-intake.js: intake_queue 'new' rows -> assets, catalog artist spelling,
+  full museum title + year, daily/per-run caps, stops if the intake folder isn't shared
+- cron.js: hourly job, does nothing unless INTAKE_PROMOTE_ON=1
+- drive-watcher.js + missing-files.js: promoted files sit outside the main root, so the
+  full scan no longer treats them as missing
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01L8Ri88dPcQXC1yEe69rd8n
+---
+ src/scripts/cron.js           |  14 +++
+ src/scripts/drive-watcher.js  |   5 +-
+ src/scripts/promote-intake.js | 170 ++++++++++++++++++++++++++++++++++
+ src/services/missing-files.js |  18 +++-
+ 4 files changed, 205 insertions(+), 2 deletions(-)
+ create mode 100644 src/scripts/promote-intake.js
+
+diff --git a/src/scripts/cron.js b/src/scripts/cron.js
+index 916cd52..52e421f 100644
+--- a/src/scripts/cron.js
++++ b/src/scripts/cron.js
+@@ -575,6 +575,20 @@ function startCronJobs() {
+   cron.schedule("45 * * * *", backfillDriveLinks);
+   setTimeout(backfillDriveLinks, 6 * 60 * 1000);
+ 
++  // ── Hourly (:05): reviewed museum downloads → catalog (Tobi, 16 Nov 2026) ──
++  // Off unless INTAKE_PROMOTE_ON=1; capped by INTAKE_PROMOTE_DAILY / INTAKE_PROMOTE_PER_RUN.
++  // Only database work (no Drive scan, no image work), so it is light on the server.
++  cron.schedule("5 * * * *", () => {
++    if (process.env.INTAKE_PROMOTE_ON !== "1") return;
++    runJob("promote-intake", path.join(ROOT, "src/scripts/promote-intake.js"), {
++      heapMb: 200, timeoutMs: 20 * 60 * 1000,
++      onDone: (error, stdout, stderr) => {
++        if (stdout) console.log(stdout.slice(-1500));
++        if (error) console.error("❌ promote-intake failed:", error.message, (stderr || "").slice(-500));
++      },
++    });
++  });
++
+   // Health check log every 6 hours
+   cron.schedule("0 */6 * * *", async () => {
+     console.log(`\n⏰ [${new Date().toISOString()}] Health check...`);
+diff --git a/src/scripts/drive-watcher.js b/src/scripts/drive-watcher.js
+index c934409..05fbd2f 100644
+--- a/src/scripts/drive-watcher.js
++++ b/src/scripts/drive-watcher.js
+@@ -411,7 +411,10 @@ async function fullScan(drive) {
+   if (freshScan && !unscanned.length && seenIds.size > 1000) {
+     try {
+       const live = await missingFiles.allLiveDriveIds();
+-      const candidates = live.filter(id => !seenIds.has(id));
++      // Promoted museum downloads live in "Neverland Museum Intake", outside this root, so the
++      // scan never sees them: leave them out, or they'd be checked as missing (16 Nov 2026).
++      const intakeIds = await missingFiles.intakeDriveIds();
++      const candidates = live.filter(id => !seenIds.has(id) && !intakeIds.has(id));
+       console.log(`   🔎 ${candidates.length} listed artworks not seen in Drive — confirming each`);
+       missing = await missingFiles.hideMissing(drive, candidates, { catalogSize: live.length, label: " (full scan)" });
+     } catch (e) { console.error(`   ⚠️  missing-file check failed: ${e.message}`); }
+diff --git a/src/scripts/promote-intake.js b/src/scripts/promote-intake.js
+new file mode 100644
+index 0000000..6f148ee
+--- /dev/null
++++ b/src/scripts/promote-intake.js
+@@ -0,0 +1,170 @@
++#!/usr/bin/env node
++/**
++ * Promote reviewed museum downloads into the catalog (Tobi, 16 Nov 2026).
++ *
++ * The museum intake (github.com/msfits20/neverland-museum-intake) saves files into the
++ * Drive folder "Neverland Museum Intake" (never into "Neverland Prints"), and its review
++ * writes one row per file to `intake_queue`:
++ *   new   = passed every check (opens, sharp enough, no frame, not already in the catalog,
++ *           not a repeat of another download)
++ *   held  = kept out, with hold_reason
++ * This script turns `new` rows into `assets` rows exactly like drive-watcher.js does for
++ * "Neverland Prints" files, so the drip sync creates their Shopify products and every
++ * other job (sizes, frames, ranking, descriptions, channel risk rules) treats them like
++ * the rest of the catalog. Products point at the Drive file id, so the files stay where
++ * they are.
++ *
++ *   - artist  = the catalog's own spelling (intake_artist_map), so works join their
++ *               existing artist pages instead of starting a second one
++ *   - title   = the museum's title, kept whole (the recognised name is never shortened),
++ *               plus the year like every other product title
++ *   - rows marked as an upgrade for a weak catalog copy are NOT promoted here: they
++ *     replace that copy's file under the same product (separate step)
++ *
++ * Off unless INTAKE_PROMOTE_ON=1. At most INTAKE_PROMOTE_DAILY products a Lagos day
++ * (default 5000) and INTAKE_PROMOTE_PER_RUN per run (default 1000).
++ * Refuses to run if the service account can't open the intake files (folder not shared):
++ * products without a readable file would show "Image unavailable".
++ *
++ *   node src/scripts/promote-intake.js --dry     # report only
++ *   node src/scripts/promote-intake.js           # promote (when switched on)
++ */
++require("dotenv").config();
++const { google } = require("googleapis");
++
++let supabase;
++try { supabase = require("../db/supabase"); } catch {
++  const { createClient } = require("@supabase/supabase-js");
++  supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
++}
++const { analyzeArtwork } = require("../services/resolution-engine");
++const { isPrintable } = require("../services/pricing");
++
++const DRY = process.argv.includes("--dry");
++const ON = process.env.INTAKE_PROMOTE_ON === "1";
++const DAILY = parseInt(process.env.INTAKE_PROMOTE_DAILY || "5000", 10);
++const PER_RUN = parseInt(process.env.INTAKE_PROMOTE_PER_RUN || "1000", 10);
++
++function lagosDayStartUtc() {
++  const now = new Date(Date.now() + 3600 * 1000); // Lagos = UTC+1
++  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - 3600 * 1000).toISOString();
++}
++
++function yearFromFilename(name) {
++  const base = String(name || "").replace(/\.\w+$/, "").replace(/_\d+x\d+$/, "");
++  const m = base.match(/(?:^|\s)((?:1[0-9]|20)\d{2}(?:\s*-\s*(?:1[0-9]|20)\d{2})?)\s*$/);
++  return m ? m[1].replace(/\s+/g, " ") : "";
++}
++
++function productTitle(row) {
++  const t = String(row.title || "").replace(/\s+/g, " ").trim()
++    || String(row.filename || "").replace(/\.\w+$/, "").replace(/_\d+x\d+$/, "");
++  const y = yearFromFilename(row.filename);
++  return y && !t.includes(y.slice(0, 4)) ? `${t} ${y}` : t;
++}
++
++async function driveClient() {
++  const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
++  const auth = new google.auth.GoogleAuth({ credentials, scopes: ["https://www.googleapis.com/auth/drive.readonly"] });
++  return google.drive({ version: "v3", auth });
++}
++
++async function canOpen(drive, ids) {
++  let ok = 0;
++  for (const id of ids) {
++    try { await drive.files.get({ fileId: id, fields: "id" }); ok++; } catch { /* 404 = not shared */ }
++  }
++  return ok;
++}
++
++async function main() {
++  if (!ON && !DRY) { console.log("promote-intake: off (INTAKE_PROMOTE_ON != 1)"); return; }
++
++  const { count: doneToday } = await supabase.from("intake_queue").select("drive_file_id", { count: "exact", head: true })
++    .eq("status", "promoted").gte("promoted_at", lagosDayStartUtc());
++  const room = Math.min(PER_RUN, Math.max(0, DAILY - (doneToday || 0)));
++  console.log(`promote-intake: ${doneToday || 0} promoted today, room for ${room} this run${DRY ? " (dry run)" : ""}`);
++  if (!room) return;
++
++  const { data: rows, error } = await supabase.from("intake_queue")
++    .select("drive_file_id, filename, filepath, artist, title, width_px, height_px, file_size_bytes, quality")
++    .eq("status", "new").is("asset_id", null)
++    .order("created_at").limit(room * 2);
++  if (error) throw new Error(`intake_queue: ${error.message}`);
++  const cands = (rows || []).filter(r => !(r.quality && r.quality.upgrade_for)).slice(0, room);
++  if (!cands.length) { console.log("promote-intake: nothing waiting"); return; }
++
++  const drive = await driveClient();
++  const sample = cands.slice(0, 5).map(r => r.drive_file_id);
++  const opened = await canOpen(drive, sample);
++  if (opened < sample.length) {
++    console.error(`promote-intake: STOPPED - the backend can open only ${opened}/${sample.length} intake files. ` +
++      `Share the Drive folder "Neverland Museum Intake" with the backend's service account (Viewer).`);
++    process.exitCode = 1;
++    return;
++  }
++
++  const artists = [...new Set(cands.map(r => r.artist).filter(Boolean))];
++  const map = new Map();
++  for (let i = 0; i < artists.length; i += 200) {
++    const { data } = await supabase.from("intake_artist_map").select("intake_artist, catalog_artist").in("intake_artist", artists.slice(i, i + 200));
++    for (const m of data || []) map.set(m.intake_artist, m.catalog_artist);
++  }
++
++  const ids = cands.map(r => r.drive_file_id);
++  const existing = new Set();
++  for (let i = 0; i < ids.length; i += 300) {
++    const { data } = await supabase.from("assets").select("drive_file_id").in("drive_file_id", ids.slice(i, i + 300));
++    for (const a of data || []) existing.add(a.drive_file_id);
++  }
++
++  const records = [];
++  for (const r of cands) {
++    if (existing.has(r.drive_file_id)) continue;
++    const w = r.width_px || 0, h = r.height_px || 0;
++    const res = w && h ? analyzeArtwork(w, h) : null;
++    records.push({
++      drive_file_id: r.drive_file_id,
++      filename: r.filename,
++      filepath: r.filepath,
++      mime_type: "image/jpeg",
++      file_size_bytes: r.file_size_bytes,
++      width_px: w || null,
++      height_px: h || null,
++      aspect_ratio: res?.aspectRatio || null,
++      ratio_class: res?.ratioClass || null,
++      max_print_width_cm: res?.maxPrint?.widthCm || null,
++      max_print_height_cm: res?.maxPrint?.heightCm || null,
++      title: productTitle(r),
++      artist: map.get(r.artist) || (r.artist || "").split("|")[0].trim() || null,
++      quality_tier: /\/Above /i.test(r.filepath || "") ? "high" : "standard",
++      shopify_status: "pending",
++      ingestion_status: res && !isPrintable(res.maxPrint?.widthCm, res.maxPrint?.heightCm) ? "too_small" : "analyzed",
++      ingestion_error: res ? null : "No dimensions",
++    });
++  }
++
++  console.log(`promote-intake: ${records.length} to add (${existing.size} already in assets)`);
++  if (DRY) { console.log(records.slice(0, 10).map(r => `  ${r.artist} — ${r.title}`).join("\n")); return; }
++
++  let added = 0;
++  for (let i = 0; i < records.length; i += 500) {
++    const batch = records.slice(i, i + 500);
++    const { error: e } = await supabase.from("assets").upsert(batch, { onConflict: "drive_file_id", ignoreDuplicates: true });
++    if (e) { console.error(`promote-intake: insert failed: ${e.message}`); break; }
++    const { data: made } = await supabase.from("assets").select("id, drive_file_id").in("drive_file_id", batch.map(b => b.drive_file_id));
++    for (const a of made || []) {
++      await supabase.from("intake_queue").update({ status: "promoted", promoted_at: new Date().toISOString(), asset_id: a.id, updated_at: new Date().toISOString() })
++        .eq("drive_file_id", a.drive_file_id).eq("status", "new");
++    }
++    added += (made || []).length;
++  }
++  // already-in-assets rows count as promoted too (no product twice)
++  for (const id of existing) {
++    await supabase.from("intake_queue").update({ status: "promoted", promoted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
++      .eq("drive_file_id", id).eq("status", "new");
++  }
++  console.log(`promote-intake: added ${added} artworks; the drip sync turns them into Shopify products`);
++}
++
++main().catch(e => { console.error("promote-intake failed:", e.message); process.exitCode = 1; });
+diff --git a/src/services/missing-files.js b/src/services/missing-files.js
+index dad1504..26d8123 100644
+--- a/src/services/missing-files.js
++++ b/src/services/missing-files.js
+@@ -137,4 +137,20 @@ async function allLiveDriveIds() {
+   return ids;
+ }
+ 
+-module.exports = { hideMissing, restoreIfBack, allLiveDriveIds };
++/** Drive ids of museum downloads promoted into the catalog (they sit outside the main root). */
++async function intakeDriveIds() {
++  const ids = new Set();
++  let after = "";
++  for (;;) {
++    const { data, error } = await supabase.from("intake_queue").select("drive_file_id")
++      .eq("status", "promoted").gt("drive_file_id", after).order("drive_file_id").limit(1000);
++    if (error) throw new Error(`missing-files intake list: ${error.message}`);
++    if (!data?.length) break;
++    for (const r of data) ids.add(r.drive_file_id);
++    after = data[data.length - 1].drive_file_id;
++    if (data.length < 1000) break;
++  }
++  return ids;
++}
++
++module.exports = { hideMissing, restoreIfBack, allLiveDriveIds, intakeDriveIds };
+-- 
+2.43.0
+
