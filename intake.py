@@ -574,7 +574,7 @@ class Run:
         if self.cat:
             try:
                 cph = str(imagehash.phash(im))      # same method as the catalog scan
-                match = self.cat.best(cph, surname(it["artist"]), catalog_mod.title_words(norm(it["title"])))
+                match = self.cat.best(cph, surname(it["artist"]), catalog_mod.title_words(norm(it["title"])), im)
             except Exception as e:
                 log("  catalog check skipped:", str(e)[:80])
         if match and not catalog_mod.upgrade_over(match, w, h):

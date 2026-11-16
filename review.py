@@ -140,7 +140,7 @@ def intake_repeats(imgs, entries):
                 continue
             # i loses to j if j is bigger, or same size and j's id sorts first
             if px[j] > px[i] or (px[j] == px[i] and ids[j] < ids[i]):
-                loser[ids[i]] = ids[j]
+                loser[ids[i]] = (ids[j], int(d[j]))
                 break
     log("repeats among downloads: %d" % len(loser))
     return loser
@@ -248,7 +248,7 @@ def check(d, f, e, cat, loser, missing, frames):
     row.update(width_px=w, height_px=h, phash=ph)
     q.update(jpeg_quality=jq, upscale_factor=factor, max_sharp_long_in=sharp_in, frame_score=fs)
     match = cat.best(ph, intake.surname(row["artist"]),
-                     catalog_mod.title_words(intake.norm(row["title"]))) if cat else None
+                     catalog_mod.title_words(intake.norm(row["title"])), rgb) if cat else None
     if match:
         q["catalog_match"] = match
     upgrade = catalog_mod.upgrade_over(match, w / factor, h / factor)
@@ -264,7 +264,12 @@ def check(d, f, e, cat, loser, missing, frames):
     elif match and not upgrade:
         row.update(status="held", hold_reason="already in catalog", duplicate_of=match["id"])
     elif f["id"] in loser:
-        row.update(status="held", hold_reason="repeat of download", duplicate_of=loser[f["id"]])
+        other, dist = loser[f["id"]]
+        cd = 0 if dist <= catalog_mod.SAME_BITS else catalog_mod.confirmed(
+            cat.prev if cat else None, catalog_mod.center_hash(rgb), other)
+        q["repeat_of"] = {"id": other, "dist": dist, "center": cd}
+        if cd is not None and cd <= catalog_mod.CENTER_BITS:
+            row.update(status="held", hold_reason="repeat of download", duplicate_of=other)
     return row, small
 
 
@@ -372,7 +377,7 @@ def main():
         items = []
         for r, t in dup[:24]:
             m = r["quality"]["catalog_match"]
-            items.append((t, "NEW d%d %s" % (m["dist"], r["title"])))
+            items.append((t, "NEW d%d c%s %s" % (m["dist"], m.get("center"), r["title"])))
             try:
                 items.append((catalog_thumb(m["id"]), "OURS %s" % m["file"].split("/")[-1]))
             except Exception:
@@ -382,7 +387,7 @@ def main():
         items = []
         path_of = {f["id"]: f["path"] for f in imgs}
         for r, t in rep:
-            items.append((t, "HELD %s" % r["title"]))
+            items.append((t, "HELD c%s %s" % (r["quality"]["repeat_of"]["center"], r["title"])))
             try:
                 j = d.req("GET", d.API + "/files/" + r["duplicate_of"], params={"fields": "thumbnailLink"}).json()
                 tr = d.req("GET", j["thumbnailLink"].replace("=s220", "=s400"))
