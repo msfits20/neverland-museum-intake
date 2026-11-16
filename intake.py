@@ -701,6 +701,33 @@ def upgrade_capped(d):
     log("Upgraded %d capped files" % fixed)
 
 
+def legacy_busy_with(d):
+    """Source the old single (all-museums) run is still working on, or None.
+    A part for that museum must wait, or both would download the same pictures."""
+    try:
+        r = d.req("GET", d.API + "/files", params={
+            "q": "'%s' in parents and name = 'state.json' and trashed = false" % d.state_dir,
+            "fields": "files(id,modifiedTime)"}).json().get("files") or []
+        if not r:
+            return None
+        mod = time.mktime(time.strptime(r[0]["modifiedTime"][:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
+        if time.time() - mod > 20 * 60:
+            return None
+        logs = d.req("GET", d.API + "/files", params={
+            "q": "'%s' in parents and name contains 'log-' and trashed = false" % d.state_dir,
+            "orderBy": "createdTime desc", "pageSize": 20, "fields": "files(id,name)"}).json().get("files") or []
+        for f in logs:
+            if not re.match(r"^log-\d{8}-\d{6}\.jsonl$", f["name"]):
+                continue  # a part's log, not the old run's
+            body = d.req("GET", d.API + "/files/" + f["id"], params={"alt": "media"}).text.strip().splitlines()
+            if body:
+                return json.loads(body[-1]).get("src")
+        return "unknown"
+    except Exception as e:
+        log("legacy check failed:", str(e)[:100])
+        return None
+
+
 def main():
     if os.environ.get("PAUSED") == "1":
         log("Paused (repository variable PAUSED=1). Nothing to do.")
@@ -717,6 +744,11 @@ def main():
             log("Not enough Drive space - not starting.")
             return
     d.setup_root()
+    if STATE_FILE != "state.json":
+        busy = legacy_busy_with(d)
+        if busy and (busy == "unknown" or busy in SOURCES):
+            log("The earlier all-museums run is still downloading %s - this part waits for the next run." % busy)
+            return
     if os.environ.get("UPGRADE") == "1":
         upgrade_capped(d)
         return
