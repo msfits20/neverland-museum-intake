@@ -728,6 +728,20 @@ def legacy_busy_with(d):
         return None
 
 
+ORDER = ["nga", "met", "cleveland", "aic"]
+
+
+def legacy_blocks(d):
+    """The old run goes through the museums in ORDER; a part must wait if the old run is on
+    its museum or hasn't reached it yet (it would download the same pictures again)."""
+    busy = legacy_busy_with(d)
+    if not busy:
+        return None
+    if busy == "unknown" or busy not in ORDER:
+        return busy
+    return busy if any(s in ORDER and ORDER.index(s) >= ORDER.index(busy) for s in SOURCES) else None
+
+
 def main():
     if os.environ.get("PAUSED") == "1":
         log("Paused (repository variable PAUSED=1). Nothing to do.")
@@ -745,8 +759,8 @@ def main():
             return
     d.setup_root()
     if STATE_FILE != "state.json":
-        busy = legacy_busy_with(d)
-        if busy and (busy == "unknown" or busy in SOURCES):
+        busy = legacy_blocks(d)
+        if busy:
             log("The earlier all-museums run is still downloading %s - this part waits for the next run." % busy)
             return
     if os.environ.get("UPGRADE") == "1":
@@ -779,6 +793,9 @@ def main():
                         last_check = time.time()
                         if d.free_gb() < FLOOR_GB:
                             log("Drive free space below the floor - stopping.")
+                            STOP.set()
+                        if STATE_FILE != "state.json" and legacy_blocks(d):
+                            log("The earlier all-museums run reached this museum - stopping so nothing is downloaded twice.")
                             STOP.set()
                 for f in futs:
                     f.result()
