@@ -9,6 +9,9 @@ it created itself, so it cannot see or touch any other folder.
 
 - Skips anything already in the Neverland Prints catalog (artist + title).
 - Skips repeats among its own downloads (picture fingerprint).
+- Skips look-alikes of catalog images (picture fingerprint vs the live
+  catalog), except when our copy is weak and the new one prints bigger:
+  those are kept as upgrades (logged with "upgrade_for").
 - Keeps only images big enough to print, and shrinks huge ones to 9,000 px.
 - Saves progress in Drive after every few images, so a stop never loses work.
 - Stops by itself when Drive free space falls below FLOOR_GB.
@@ -31,6 +34,8 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 from PIL import Image
 import imagehash
+
+import catalog as catalog_mod
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -471,8 +476,9 @@ def file_name(title, date, w, h):
 
 
 class Run:
-    def __init__(self, drive, known):
-        self.d, self.known = drive, known
+    def __init__(self, drive, known, cat=None):
+        self.d, self.known, self.cat = drive, known, cat
+        self.catdupes = self.upgrades = 0
         self.state = {}
         self.phash = set()
         self.log = []
@@ -485,11 +491,13 @@ class Run:
         self.state = {k: set(v) for k, v in st.get("done", {}).items()}
         self.phash = set(st.get("phash", []))
         self.keys_new = set(st.get("keys", []))
+        self.weakchk = set(st.get("weakchk", []))
 
     def save(self):
         with LOCK:
             obj = {"done": {k: sorted(v) for k, v in self.state.items()},
                    "phash": sorted(self.phash), "keys": sorted(self.keys_new),
+                   "weakchk": sorted(self.weakchk),
                    "updated": time.strftime("%Y-%m-%d %H:%M:%S")}
             logs, self.log = self.log, []
         self.d.write_json("state.json", obj)
@@ -515,11 +523,20 @@ class Run:
         if self.should_stop():
             return
         done = self.state.setdefault(it["src"], set())
-        if it["id"] in done:
-            return
         ks = keys(it["artist"], it["title"])
-        k = ks[1]
-        if any(x in self.known or x in self.keys_new for x in ks):
+        weak_hit = bool(self.cat) and any(x in self.cat.weak_keys for x in ks)
+        tag = it["src"] + ":" + it["id"]
+        if it["id"] in done:
+            # skipped earlier by name only; look once more if our copy is weak
+            if not (weak_hit and tag not in self.weakchk and not any(x in self.keys_new for x in ks)):
+                return
+            with LOCK:
+                self.weakchk.add(tag)
+        elif weak_hit:
+            with LOCK:
+                self.weakchk.add(tag)
+        if any(x in self.keys_new for x in ks) or (
+                not weak_hit and any(x in self.known for x in ks)):
             with LOCK:
                 done.add(it["id"])
                 self.skipped += 1
@@ -553,6 +570,25 @@ class Run:
         im, data = finish(im, data)
         w, h = im.size
         ph = str(imagehash.phash(im.convert("L").resize((256, 256))))
+        cph = match = None
+        if self.cat:
+            try:
+                cph = str(imagehash.phash(im))      # same method as the catalog scan
+                match = self.cat.best(cph, surname(it["artist"]))
+            except Exception as e:
+                log("  catalog check skipped:", str(e)[:80])
+        if match and not catalog_mod.upgrade_over(match, w, h):
+            with LOCK:          # logged (not saved) so every skip can be checked later
+                done.add(it["id"])
+                self.catdupes += 1
+                self.log.append({k2: it.get(k2) for k2 in ("src", "id", "artist", "title", "date", "kind", "page")} |
+                                {"skipped": "lookalike", "w": w, "h": h, "cphash": cph, "match": match})
+            return
+        if weak_hit and not match and any(x in self.known for x in ks):
+            with LOCK:          # same name as a weak catalog item, but not the same picture
+                done.add(it["id"])
+                self.skipped += 1
+            return
         with LOCK:
             if ph in self.phash:
                 done.add(it["id"])
@@ -572,14 +608,17 @@ class Run:
             self.saved += 1
             self.since_save += 1
             self.log.append({k2: it[k2] for k2 in ("src", "id", "artist", "title", "date", "kind", "page", "license")} |
-                            {"file": "%s/%s/%s" % (artist, tier, name), "w": w, "h": h, "phash": ph, "bytes": len(data)})
+                            {"file": "%s/%s/%s" % (artist, tier, name), "w": w, "h": h, "phash": ph, "bytes": len(data),
+                             "cphash": cph, "upgrade_for": match["id"] if match else None})
+            if match:
+                self.upgrades += 1
             due = self.since_save >= 25
             if due:
                 self.since_save = 0
         if due:
             self.save()
-            log("  saved %d | skipped (already have) %d | too small %d | repeats %d | failed %d | %.1f GB"
-                % (self.saved, self.skipped, self.small, self.dupes, self.failed, self.bytes / 1e9))
+            log("  saved %d (upgrades %d) | skipped (already have) %d | look-alikes %d | too small %d | repeats %d | failed %d | %.1f GB"
+                % (self.saved, self.upgrades, self.skipped, self.catdupes, self.small, self.dupes, self.failed, self.bytes / 1e9))
 
 
 def upgrade_capped(d):
@@ -641,7 +680,14 @@ def main():
     if os.environ.get("UPGRADE") == "1":
         upgrade_capped(d)
         return
-    run = Run(d, known)
+    cat = None
+    try:
+        cat = catalog_mod.load(surname, keys)
+        if cat:
+            log("Catalog fingerprints: %d (weak copies: %d)" % (len(cat), int(cat.weak.sum())))
+    except Exception as e:
+        log("Catalog fingerprints unavailable, name check only:", str(e)[:120])
+    run = Run(d, known, cat)
     run.load()
     last_check = time.time()
     try:
@@ -668,8 +714,8 @@ def main():
         run.save()
         if AGAIN["yes"] and not DRY and not LIMIT:
             open("again", "w").write("1")
-        log("DONE this run: saved %d | skipped (already have) %d | too small %d | repeats %d | failed %d | %.1f GB"
-            % (run.saved, run.skipped, run.small, run.dupes, run.failed, run.bytes / 1e9))
+        log("DONE this run: saved %d (upgrades %d) | skipped (already have) %d | look-alikes %d | too small %d | repeats %d | failed %d | %.1f GB"
+            % (run.saved, run.upgrades, run.skipped, run.catdupes, run.small, run.dupes, run.failed, run.bytes / 1e9))
 
 
 if __name__ == "__main__":

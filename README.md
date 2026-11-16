@@ -23,3 +23,20 @@ and records the results in the store database. Its Google permission is
 read-only: it cannot change, move or delete anything in Drive. It runs every
 6 hours in 8 parallel parts and skips files already checked.
 `quality_mode.txt`: `sample N` = calibration run, `full` = everything, `off` = stop.
+
+## Look-alike check (catalog fingerprints)
+`catalog.py` loads the picture fingerprint of every catalog image (from the
+quality scan) so the intake skips artworks we already sell, even under a
+different title or from another museum. Exception: when our copy is weak
+(quality scan said limit_sizes or hide) and the museum copy prints clearly
+bigger, it is downloaded as an upgrade (`upgrade_for` in the log). Every
+skipped look-alike is logged too, so skips can be checked.
+
+## Intake review (read-only)
+`review.py` checks every downloaded file before it can join the catalog and
+writes one row per file to `intake_queue`: `new` (fine) or `held` with the
+reason (broken, too soft, frame in picture, already in catalog, repeat of
+download). It also notes upgrades and titles that fill Artvee items the old
+scraper claimed but never saved (`missing_artvee_titles.txt.gz`). It never
+changes Drive. Run with `calibrate` > 0 to get contact sheets on the
+`review-samples` branch instead of writing to the database.

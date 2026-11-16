@@ -1,0 +1,76 @@
+name: Intake review (read-only)
+
+on:
+  schedule:
+    - cron: "37 1,7,13,19 * * *"   # every 6 hours; skips files already reviewed
+  workflow_dispatch:
+    inputs:
+      calibrate:
+        description: "Calibration: review this many random files per part, write nothing, make contact sheets (0 = normal run)"
+        default: "0"
+      redo:
+        description: "Review everything again (1 = yes)"
+        default: "0"
+      frame_t:
+        description: "Frame score at which a picture is held"
+        default: "0.6"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: intake-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: vars.PAUSED != '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -q open_clip_torch numpy pillow imagehash requests
+      - name: Review downloaded museum images (nothing in Drive is changed)
+        env:
+          GOOGLE_AUTH: ${{ secrets.GOOGLE_AUTH }}
+          NEVERLAND_READ: ${{ secrets.NEVERLAND_READ }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: "8"
+          CALIBRATE: ${{ github.event.inputs.calibrate || '0' }}
+          REDO: ${{ github.event.inputs.redo || '0' }}
+          FRAME_T: ${{ github.event.inputs.frame_t || '0.6' }}
+          RUN_MINUTES: "300"
+        run: python review.py
+      - if: github.event.inputs.calibrate && github.event.inputs.calibrate != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: calibration-${{ matrix.shard }}
+          path: calibration/
+
+  samples:
+    needs: review
+    if: always() && github.event.inputs.calibrate && github.event.inputs.calibrate != '0'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: calibration
+          merge-multiple: true
+      - name: Publish the contact sheets to the review-samples branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd calibration
+          git init -q -b review-samples
+          git config user.name "intake-review"; git config user.email "intake-review@users.noreply.github.com"
+          git add -A && git commit -qm "calibration ${{ github.run_id }}"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}" review-samples

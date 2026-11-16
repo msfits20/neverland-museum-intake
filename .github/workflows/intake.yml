@@ -33,10 +33,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -q pillow imagehash requests
+      - run: pip install -q pillow imagehash requests numpy
       - name: Download museum art into Google Drive
         env:
           GOOGLE_AUTH: ${{ secrets.GOOGLE_AUTH }}
+          NEVERLAND_READ: ${{ secrets.NEVERLAND_READ }}
           LIMIT: ${{ github.event.inputs.limit || '0' }}
           SOURCES: ${{ github.event.inputs.sources || 'nga,met,cleveland,aic' }}
           FLOOR_GB: ${{ vars.FLOOR_GB || '150' }}
