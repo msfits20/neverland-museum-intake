@@ -520,6 +520,15 @@ class Run:
         return STOP.is_set()
 
     def handle(self, it):
+        """One bad image (upload hiccup, odd file) must never stop the run."""
+        try:
+            self._handle(it)
+        except Exception as e:
+            with LOCK:
+                self.failed += 1
+            log("  failed", it.get("src"), it.get("id"), str(e)[:100])
+
+    def _handle(self, it):
         if self.should_stop():
             return
         done = self.state.setdefault(it["src"], set())
