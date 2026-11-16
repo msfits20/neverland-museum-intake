@@ -49,6 +49,10 @@ RUN_SECONDS = int(os.environ.get("RUN_MINUTES", "340")) * 60
 RUN_MAX_GB = float(os.environ.get("RUN_MAX_GB", "180"))
 WORKERS = int(os.environ.get("WORKERS", "8"))
 STATE_FILE = os.environ.get("STATE_FILE", "state.json")
+# 16 Nov 2026: each museum split into SHARD_N parts that run side by side (part SHARD_I of them)
+SHARD_N = int(os.environ.get("SHARD_N", "1"))
+SHARD_I = int(os.environ.get("SHARD_I", "0"))
+PARENT_STATE = os.environ.get("PARENT_STATE", "")   # the museum's single-part state file, to start from
 SOURCES = os.environ.get("SOURCES", "nga,met,cleveland,aic").split(",")
 DRY = os.environ.get("DRY_RUN") == "1"
 LIMIT = int(os.environ.get("LIMIT", "0"))  # 0 = no limit (test runs use 50)
@@ -516,6 +520,8 @@ class Run:
     def load(self):
         # One state file per parallel part (16 Nov 2026); the first time, start from the shared one.
         st = self.d.read_json(STATE_FILE, None)
+        if st is None and PARENT_STATE:
+            st = self.d.read_json(PARENT_STATE, None)
         if st is None:
             st = self.d.read_json("state.json", {})
         self.state = {k: set(v) for k, v in st.get("done", {}).items()}
@@ -561,6 +567,8 @@ class Run:
     def _handle(self, it):
         if self.should_stop():
             return
+        if SHARD_N > 1 and int(hashlib.md5((it["src"] + ":" + str(it["id"])).encode()).hexdigest(), 16) % SHARD_N != SHARD_I:
+            return  # another part of this museum handles it
         done = self.state.setdefault(it["src"], set())
         ks = keys(it["artist"], it["title"])
         weak_hit = bool(self.cat) and any(x in self.cat.weak_keys for x in ks)
@@ -749,6 +757,23 @@ def share_with_backend(d):
         log("Sharing with the backend failed:", str(e)[:120])
 
 
+def parent_busy(d):
+    """True while an older single part of this museum is still writing its state file
+    (it saves every few pictures), so a split part doesn't download the same pictures."""
+    if not PARENT_STATE:
+        return False
+    try:
+        r = d.req("GET", d.API + "/files", params={
+            "q": "'%s' in parents and name = '%s' and trashed = false" % (d.state_dir, PARENT_STATE),
+            "fields": "files(modifiedTime)"}).json().get("files") or []
+        if not r:
+            return False
+        mod = time.mktime(time.strptime(r[0]["modifiedTime"][:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
+        return time.time() - mod < 150
+    except Exception:
+        return False
+
+
 ORDER = ["nga", "met", "cleveland", "aic"]
 
 
@@ -795,6 +820,9 @@ def main():
             log("Catalog fingerprints: %d (weak copies: %d)" % (len(cat), int(cat.weak.sum())))
     except Exception as e:
         log("Catalog fingerprints unavailable, name check only:", str(e)[:120])
+    if parent_busy(d):
+        log("An earlier single %s part is still downloading - this part waits for the next run." % ",".join(SOURCES))
+        return
     run = Run(d, known, cat)
     run.load()
     last_check = time.time()
@@ -815,6 +843,9 @@ def main():
                         last_check = time.time()
                         if d.free_gb() < FLOOR_GB:
                             log("Drive free space below the floor - stopping.")
+                            STOP.set()
+                        if parent_busy(d):
+                            log("An earlier single part of this museum is still running - stopping.")
                             STOP.set()
                         if STATE_FILE != "state.json" and legacy_blocks(d):
                             log("The earlier all-museums run reached this museum - stopping so nothing is downloaded twice.")

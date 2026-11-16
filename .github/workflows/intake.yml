@@ -29,12 +29,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 355
     concurrency:
-      group: museum-intake-${{ matrix.part }}
+      group: museum-intake-${{ matrix.part }}-${{ matrix.shard }}
       cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
-        part: [nga, met, cleveland, aic]   # 16 Nov 2026: the four museums download side by side
+        part: [nga, met, cleveland, aic]   # the four museums download side by side
+        shard: [0, 1, 2]                   # 16 Nov 2026: each museum in 3 parts at once (12 jobs)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -48,7 +49,10 @@ jobs:
           NEVERLAND_READ: ${{ secrets.NEVERLAND_READ }}
           LIMIT: ${{ github.event.inputs.limit || '0' }}
           SOURCES: ${{ matrix.part }}
-          STATE_FILE: state-${{ matrix.part }}.json
+          STATE_FILE: state-${{ matrix.part }}-${{ matrix.shard }}.json
+          PARENT_STATE: state-${{ matrix.part }}.json
+          SHARD_N: "3"
+          SHARD_I: ${{ matrix.shard }}
           WORKERS: "10"
           FLOOR_GB: ${{ vars.FLOOR_GB || '150' }}
           RUN_MINUTES: "330"
