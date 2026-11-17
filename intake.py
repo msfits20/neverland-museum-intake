@@ -551,6 +551,40 @@ def resolve_rijks(it):
     return it
 
 
+# ------------------------------------------------------------------ SMK --
+# 17 Nov 2026. Statens Museum for Kunst (Denmark) open API, no key; public-domain
+# works with images (~39.5K). Wall art only: paintings, drawings, prints, watercolours.
+SMK_OK = re.compile(r"paint|draw|print|etch|engrav|lithograph|woodcut|xylograph|watercol|gouache|pastel|poster|mezzotint|aquatint", re.I)
+
+
+def src_smk():
+    offset, rows = 0, 100
+    while not STOP.is_set():
+        j = get_json("https://api.smk.dk/api/v1/art/search/", params={
+            "keys": "*", "filters": "[has_image:true],[public_domain:true]",
+            "offset": offset, "rows": rows, "lang": "en"})
+        items = (j or {}).get("items") or []
+        if not items:
+            break
+        for r in items:
+            names = " ".join(r.get("object_names") and [n.get("name", "") if isinstance(n, dict) else str(n)
+                                                        for n in r["object_names"]] or [])
+            if not SMK_OK.search(names) or not r.get("image_native"):
+                continue
+            t = (r.get("titles") or [{}])[0].get("title") or ""
+            pr = (r.get("production") or [{}])[0]
+            artist = " ".join(x for x in (pr.get("creator_forename"), pr.get("creator_surname")) if x) \
+                or pr.get("creator") or "Anonymous"
+            pd = (r.get("production_date") or [{}])[0]
+            yield {"src": "smk", "id": str(r.get("object_number") or r.get("id")), "artist": artist,
+                   "title": t, "date": pd.get("period") or "", "kind": names.split(";")[0].lower(),
+                   "w": int(r.get("image_width") or 0), "h": int(r.get("image_height") or 0),
+                   "url": r["image_native"], "page": r.get("frontend_url"),
+                   "license": "Public domain (SMK, National Gallery of Denmark)"}
+        offset += len(items)
+        time.sleep(0.3)
+
+
 IIIF_TILE = 3800
 
 
@@ -590,7 +624,7 @@ def iiif_image(base, w=0, h=0):
     return out
 
 
-SRC = {"nga": src_nga, "met": src_met, "cleveland": src_cleveland, "aic": src_aic, "rijks": src_rijks}
+SRC = {"nga": src_nga, "met": src_met, "cleveland": src_cleveland, "aic": src_aic, "rijks": src_rijks, "smk": src_smk}
 
 
 # ----------------------------------------------------------------- main --
