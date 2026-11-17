@@ -513,15 +513,22 @@ def resolve_rijks(it):
     nm = _names(j)
     it["title"] = nm[0] if nm else None
     artist = None
-    for d in _walk(j.get("produced_by") or {}):
+    pb = j.get("produced_by") or {}
+    if isinstance(pb, list):
+        pb = pb[0] if pb else {}
+    for d in _walk(pb):
         for a in d.get("carried_out_by") or []:
+            if not isinstance(a, dict):
+                continue
             artist = _label(a) or (_actor_name(a["id"]) if a.get("id") else None)
             if artist:
                 break
         if artist:
             break
     it["artist"] = artist or "Anonymous"
-    ts = (j.get("produced_by") or {}).get("timespan") or {}
+    ts = pb.get("timespan") or {}
+    if isinstance(ts, list):
+        ts = ts[0] if ts else {}
     tn = _names(ts)
     it["date"] = tn[0] if tn else (ts.get("begin_of_the_begin") or "")[:4]
     # the image: in the record, or one hop away through the visual item / digital object
