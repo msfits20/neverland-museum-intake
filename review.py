@@ -48,6 +48,7 @@ SHARD = int(os.environ.get("SHARD", "0"))
 SHARDS = int(os.environ.get("SHARDS", "1"))
 WORKERS = int(os.environ.get("WORKERS", "4"))
 RUN_SECONDS = int(os.environ.get("RUN_MINUTES", "320")) * 60
+MARKS_T = float(os.environ.get("MARKS_T", "0.6"))
 FRAME_T = float(os.environ.get("FRAME_T", "0.6"))
 CALIBRATE = int(os.environ.get("CALIBRATE", "0"))
 REDO = os.environ.get("REDO") == "1"
@@ -188,6 +189,10 @@ class FrameModel:
     PLAIN = ["a painting", "a flat scan of an artwork filling the whole image",
              "a drawing on paper", "a print on a sheet of paper with blank margins",
              "a poster"]
+    # 17 Nov 2026 (Tobi): no watermarks, colour charts, rulers or museum labels in the picture
+    MARKS = ["an image with a watermark written across it", "a stock photo with a repeated watermark",
+             "a photo of an artwork next to a color calibration chart", "an artwork photographed with a ruler and color bars",
+             "a scanned page with a museum stamp and catalogue number label"]
 
     def __init__(self):
         import torch
@@ -199,17 +204,22 @@ class FrameModel:
         self.model.eval()
         tok = open_clip.get_tokenizer("ViT-B-32")
         with torch.no_grad():
-            t = self.model.encode_text(tok(self.FRAMED + self.PLAIN))
+            t = self.model.encode_text(tok(self.FRAMED + self.PLAIN + self.MARKS))
             self.text = t / t.norm(dim=-1, keepdim=True)
         self.lock = threading.Lock()
+        self.local = threading.local()
 
     def score(self, im):
         x = self.pre(im.convert("RGB")).unsqueeze(0)
         with self.lock, self.torch.no_grad():
             v = self.model.encode_image(x)
             v = v / v.norm(dim=-1, keepdim=True)
-            p = (100 * v @ self.text.T).softmax(dim=-1)[0]
-        return round(float(p[:len(self.FRAMED)].sum()), 3)
+            logits = 100 * v @ self.text.T
+        nf, npl = len(self.FRAMED), len(self.PLAIN)
+        p = logits[0, :nf + npl].softmax(dim=-1)
+        m = self.torch.cat([logits[0, nf + npl:], logits[0, nf:nf + npl]]).softmax(dim=-1)
+        self.local.marks = round(float(m[:len(self.MARKS)].sum()), 3)
+        return round(float(p[:nf].sum()), 3)
 
 
 ARTVEE_NEW = set()
@@ -248,8 +258,9 @@ def check(d, f, e, cat, loser, missing, frames):
     small = rgb.copy()
     small.thumbnail((448, 448))
     fs = frames.score(small) if frames else None
+    ms = getattr(frames.local, "marks", None) if frames else None
     row.update(width_px=w, height_px=h, phash=ph)
-    q.update(jpeg_quality=jq, upscale_factor=factor, max_sharp_long_in=sharp_in, frame_score=fs)
+    q.update(jpeg_quality=jq, upscale_factor=factor, max_sharp_long_in=sharp_in, frame_score=fs, marks_score=ms)
     match = cat.best(ph, intake.surname(row["artist"]),
                      catalog_mod.title_words(intake.norm(row["title"])), rgb) if cat else None
     if match:
@@ -267,6 +278,8 @@ def check(d, f, e, cat, loser, missing, frames):
         row.update(status="held", hold_reason="too soft")
     elif fs is not None and fs >= FRAME_T:
         row.update(status="held", hold_reason="frame in picture")
+    elif ms is not None and ms >= MARKS_T:
+        row.update(status="held", hold_reason="watermark / colour chart")
     elif match and not upgrade:
         row.update(status="held", hold_reason="already in catalog", duplicate_of=match["id"])
     elif f["id"] in loser:
