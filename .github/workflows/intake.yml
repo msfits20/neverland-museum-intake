@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [nga, met, cleveland, aic]   # the four museums download side by side
+        part: [rijks, nga, met, cleveland, aic]   # museums download side by side (Rijksmuseum added 17 Nov)
         shard: [0, 1, 2]                   # 16 Nov 2026: each museum in 3 parts at once (12 jobs)
     steps:
       - uses: actions/checkout@v4

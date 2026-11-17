@@ -421,6 +421,129 @@ def src_aic():
             time.sleep(1)
 
 
+# ----------------------------------------------------------- Rijksmuseum --
+# 17 Nov 2026. Data Services search API (no key) -> Linked Art object records.
+# Images on iiif.micr.io, public domain (PDM/CC0). Order: paintings, posters,
+# drawings, prints (the Artvee Dutch titles mostly come from here).
+RIJKS_TYPES = [t for t in os.environ.get("RIJKS_TYPES", "painting,poster,drawing,print").split(",") if t]
+EN = "http://vocab.getty.edu/aat/300388277"
+LA = {"Accept": "application/ld+json", "Profile": "https://linked.art/ns/v1/linked-art.json"}
+_rijks_actor = {}
+
+
+def src_rijks():
+    for t in RIJKS_TYPES:
+        url = "https://data.rijksmuseum.nl/search/collection?type=%s&imageAvailable=true" % t
+        while url and not STOP.is_set():
+            j = get_json(url)
+            if not j:
+                break
+            for o in j.get("orderedItems") or []:
+                oid = o.get("id", "").rsplit("/", 1)[-1]
+                if oid:
+                    yield {"src": "rijks", "id": oid, "artist": None, "title": None, "date": "",
+                           "kind": t, "w": 0, "h": 0, "url": None,
+                           "page": "https://id.rijksmuseum.nl/" + oid,
+                           "license": "Public domain (Rijksmuseum)"}
+            nxt = j.get("next")
+            url = nxt.get("id") if isinstance(nxt, dict) else nxt
+
+
+def _walk(x):
+    if isinstance(x, dict):
+        yield x
+        for v in x.values():
+            yield from _walk(v)
+    elif isinstance(x, list):
+        for v in x:
+            yield from _walk(v)
+
+
+def _names(node):
+    """Name contents in node.identified_by, English first."""
+    out = []
+    for n in (node or {}).get("identified_by") or []:
+        if n.get("type") != "Name" or not n.get("content"):
+            continue
+        lang = [l.get("id") for l in n.get("language") or [] if isinstance(l, dict)]
+        out.append((0 if EN in lang else 1, n["content"]))
+    return [c for _, c in sorted(out, key=lambda x: x[0])]
+
+
+def _label(node):
+    for k in ("_label",):
+        if isinstance(node.get(k), str):
+            return node[k]
+    for n in node.get("notation") or []:
+        if isinstance(n, dict) and n.get("@value") and n.get("@language") in ("en", None):
+            return n["@value"]
+    nm = _names(node)
+    return nm[0] if nm else None
+
+
+def _actor_name(aid):
+    if aid in _rijks_actor:
+        return _rijks_actor[aid]
+    nm = None
+    j = get_json(aid, headers=LA)
+    if j:
+        nm = _label(j)
+    _rijks_actor[aid] = nm
+    return nm
+
+
+MICRIO = re.compile(r"https://iiif\.micr\.io/([A-Za-z0-9]+)/")
+
+
+def _find_micrio(j):
+    for d in _walk(j):
+        for v in d.values():
+            if isinstance(v, str):
+                m = MICRIO.match(v)
+                if m:
+                    return m.group(1)
+    return None
+
+
+def resolve_rijks(it):
+    j = get_json("https://id.rijksmuseum.nl/" + it["id"], headers=LA)
+    time.sleep(0.05)
+    if not j:
+        return None
+    nm = _names(j)
+    it["title"] = nm[0] if nm else None
+    artist = None
+    for d in _walk(j.get("produced_by") or {}):
+        for a in d.get("carried_out_by") or []:
+            artist = _label(a) or (_actor_name(a["id"]) if a.get("id") else None)
+            if artist:
+                break
+        if artist:
+            break
+    it["artist"] = artist or "Anonymous"
+    ts = (j.get("produced_by") or {}).get("timespan") or {}
+    tn = _names(ts)
+    it["date"] = tn[0] if tn else (ts.get("begin_of_the_begin") or "")[:4]
+    # the image: in the record, or one hop away through the visual item / digital object
+    mid = _find_micrio(j)
+    hops = [v.get("id") for v in j.get("shows") or [] if isinstance(v, dict) and v.get("id")]
+    while not mid and hops:
+        h = get_json(hops.pop(0), headers=LA)
+        if not h:
+            continue
+        mid = _find_micrio(h)
+        for d in _walk(h):
+            for v in d.get("digitally_shown_by") or []:
+                if isinstance(v, dict) and v.get("id"):
+                    hops.append(v["id"])
+        if len(hops) > 6:
+            break
+    if not mid or not it["title"]:
+        return None
+    it["iiif"] = "https://iiif.micr.io/%s" % mid
+    return it
+
+
 IIIF_TILE = 3800
 
 
@@ -460,7 +583,7 @@ def iiif_image(base, w=0, h=0):
     return out
 
 
-SRC = {"nga": src_nga, "met": src_met, "cleveland": src_cleveland, "aic": src_aic}
+SRC = {"nga": src_nga, "met": src_met, "cleveland": src_cleveland, "aic": src_aic, "rijks": src_rijks}
 
 
 # ----------------------------------------------------------------- main --
@@ -570,6 +693,12 @@ class Run:
         if SHARD_N > 1 and int(hashlib.md5((it["src"] + ":" + str(it["id"])).encode()).hexdigest(), 16) % SHARD_N != SHARD_I:
             return  # another part of this museum handles it
         done = self.state.setdefault(it["src"], set())
+        if it["src"] == "rijks" and it["title"] is None:
+            if it["id"] in done and not os.environ.get("RECHECK"):
+                return
+            it = resolve_rijks(it)
+            if not it:
+                return  # no public image (or record) right now; retried on a later run
         ks = keys(it["artist"], it["title"])
         weak_hit = bool(self.cat) and any(x in self.cat.weak_keys for x in ks)
         tag = it["src"] + ":" + it["id"]
