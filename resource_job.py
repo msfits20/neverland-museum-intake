@@ -511,7 +511,7 @@ class Job:
             if free < FLOOR_GB:
                 log("Not enough Drive space - not starting.")
                 return
-        targets = catalog_mod._rpc(CFG, "intake_resource_targets", p_limit=20000)
+        targets = catalog_mod.rpc_offset_all(CFG, "intake_resource_targets", p_limit=20000)  # all of them, not just the first 1,000
         by = {}
         for t in targets:
             by[t["verdict"]] = by.get(t["verdict"], 0) + 1

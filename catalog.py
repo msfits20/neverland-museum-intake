@@ -136,6 +136,32 @@ def _rpc(cfg, fn, **args):
     raise RuntimeError("database unreachable (%s)" % fn)
 
 
+def rpc_offset_all(cfg, fn, page=1000, **args):
+    """Every row of a set-returning RPC. The API returns at most 1,000 rows per request,
+    so page with offset (the function must return rows in a fixed order)."""
+    args["p_token"] = cfg["db_token"]
+    out, off = [], 0
+    while True:
+        rows = None
+        for i in range(6):
+            try:
+                r = requests.post(cfg["db_url"] + "/rest/v1/rpc/%s?limit=%d&offset=%d" % (fn, page, off),
+                                  json=args, timeout=120,
+                                  headers={"apikey": cfg["db_key"], "Content-Type": "application/json"})
+                if r.status_code == 200:
+                    rows = r.json()
+                    break
+            except requests.RequestException:
+                pass
+            time.sleep(2 ** i)
+        if rows is None:
+            raise RuntimeError("database unreachable (%s)" % fn)
+        out += rows
+        if len(rows) < page:
+            return out
+        off += page
+
+
 def rpc_all(cfg, fn):
     out, after = [], ""
     while True:
