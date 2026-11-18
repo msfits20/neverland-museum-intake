@@ -32,6 +32,7 @@ retried after RETRY_DAYS. Progress: _progress/resource-state.json in Drive.
 """
 import difflib
 import io
+import hashlib
 import json
 import os
 import re
@@ -64,8 +65,13 @@ SHARPER = 1.05
 RETRY_DAYS = float(os.environ.get("RETRY_DAYS", "30"))
 DRY = os.environ.get("DRY_RUN") == "1"
 SOURCES = [s for s in os.environ.get("RESOURCE_SOURCES", "met,aic,nga,cleveland,rijks,smk,commons").split(",") if s]
-STATE = "resource-state.json"
-MISSES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resource_misses.jsonl")
+# 18 Nov 2026: runs in parallel parts (SHARD_N / SHARD_I); each part keeps its own state + misses file
+SHARD_N = int(os.environ.get("SHARD_N", "1"))
+SHARD_I = int(os.environ.get("SHARD_I", "0"))
+_SFX = "" if SHARD_N <= 1 else "-%d" % SHARD_I
+STATE = "resource-state%s.json" % _SFX
+OLD_STATE = "resource-state.json"  # the single-part run's history (read so old misses keep their retry date)
+MISSES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resource_misses%s.jsonl" % _SFX)
 T0 = time.time()
 DPI = 150
 
@@ -381,6 +387,9 @@ class Job:
         self.frames = review.FrameModel()
         self.state = self.d.read_json(STATE, {}) if not DRY else {}
         self.done = self.state.get("done", {})
+        if not DRY and STATE != OLD_STATE:
+            for k, v in self.d.read_json(OLD_STATE, {}).get("done", {}).items():
+                self.done.setdefault(k, v)
         self.n = {"targets": 0, "found": 0, "miss": 0, "error": 0}
         self.misses = []
         self.hits = []
@@ -506,6 +515,9 @@ class Job:
         by = {}
         for t in targets:
             by[t["verdict"]] = by.get(t["verdict"], 0) + 1
+        if SHARD_N > 1:
+            targets = [t for t in targets
+                       if int(hashlib.md5(t["drive_file_id"].encode()).hexdigest(), 16) % SHARD_N == SHARD_I]
         todo = [t for t in targets if self.due(t)][:TARGETS]
         log("unfit copies without a better one: %d %s | this run: %d" % (len(targets), by, len(todo)))
         for k, t in enumerate(todo):

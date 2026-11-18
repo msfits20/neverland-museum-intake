@@ -1,13 +1,13 @@
 name: Re-source unfit catalog copies
 
 # Tobi, 17 Nov 2026: find a better copy of every unfit catalog image instead of hiding it.
-# Daily; a few hundred targets per run; picks up where it stopped (state in Drive).
+# 18 Nov 2026: 8 parts side by side, every 6 hours, 300 targets per part; picks up where it stopped (state in Drive).
 on:
   push:            # first upload (or any change to the job) = a 20-target test run
     branches: [main]
     paths: [.github/workflows/resource.yml, resource_job.py]
   schedule:
-    - cron: "43 3 * * *"
+    - cron: "43 3,9,15,21 * * *"
   workflow_dispatch:
     inputs:
       targets:
@@ -20,15 +20,19 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: resource
-  cancel-in-progress: false
 
 jobs:
   resource:
     if: vars.PAUSED != '1'
     runs-on: ubuntu-latest
     timeout-minutes: 340
+    concurrency:
+      group: resource-${{ matrix.shard }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,13 +49,15 @@ jobs:
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
           FLOOR_GB: ${{ vars.FLOOR_GB || '150' }}
           RUN_MINUTES: "320"
+          SHARD_N: "8"
+          SHARD_I: ${{ matrix.shard }}
         run: python resource_job.py
       - name: Save the list of misses (re-tried later)
         if: always() && github.event.inputs.dry_run != '1'
         run: |
           git config user.name "intake-resource"; git config user.email "intake-resource@users.noreply.github.com"
-          if [ -n "$(git status --porcelain resource_misses.jsonl)" ]; then
-            git add resource_misses.jsonl
+          if [ -n "$(git status --porcelain -- 'resource_misses*.jsonl')" ]; then
+            git add -- 'resource_misses*.jsonl'
             git commit -qm "Re-source misses $(date -u +%F)"
             for i in 1 2 3; do git pull -q --rebase && git push -q && break; sleep 5; done
           fi
