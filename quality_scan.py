@@ -160,7 +160,7 @@ def rpc(fn, **args):
 def scanned_ids():
     done, after = set(), ""
     while True:
-        rows = rpc("intake_scanned_ids", p_after=after, p_limit=50000)
+        rows = rpc("intake_scanned_ids", p_after=after, p_limit=5000)  # small pages stay under the 3s DB timeout
         if not rows:
             return done
         done.update(r["drive_file_id"] for r in rows)

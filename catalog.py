@@ -139,7 +139,7 @@ def _rpc(cfg, fn, **args):
 def rpc_all(cfg, fn):
     out, after = [], ""
     while True:
-        rows = _rpc(cfg, fn, p_after=after, p_limit=50000)
+        rows = _rpc(cfg, fn, p_after=after, p_limit=5000)  # small pages stay under the 3s DB timeout
         if not rows:
             return out
         out += rows
