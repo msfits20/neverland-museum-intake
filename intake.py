@@ -630,12 +630,12 @@ YCBA_SETS = [x for x in os.environ.get("YCBA_SETS", "ycba:ps,ycba:pd").split(","
 
 def src_ycba():
     for st in YCBA_SETS:
-        params = {"verb": "ListRecords", "metadataPrefix": "lido", "set": st}
+        url, params = YCBA_OAI, {"verb": "ListRecords", "metadataPrefix": "lido", "set": st}
         while not STOP.is_set():
             txt = None
             for i in range(6):
                 try:
-                    r = S.get(YCBA_OAI, params=params, timeout=180)
+                    r = S.get(url, params=params, timeout=180)
                     if r.status_code == 200:
                         txt = r.text
                         break
@@ -662,7 +662,8 @@ def src_ycba():
             tok = re.search(r"<resumptionToken[^>]*>([^<]+)</resumptionToken>", txt)
             if not tok:
                 break
-            params = {"verb": "ListRecords", "resumptionToken": tok.group(1)}
+            # the token is already URL-encoded (e.g. ycba%3Aps); encoding it again makes the server fail
+            url, params = YCBA_OAI + "?verb=ListRecords&resumptionToken=" + tok.group(1), None
 
 
 def resolve_ycba(it):
