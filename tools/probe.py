@@ -1,22 +1,24 @@
-"""Probe 2: data shapes of candidate sources (read-only)."""
-import json, requests
+import json, re, requests
 UA = {"User-Agent": "NeverlandPrintsIntake/1.0 (hello@neverlandprints.com)"}
-def show(name, url, n=1600, js=True):
+def g(u, **kw):
+    r = requests.get(u, headers=UA, timeout=90, **kw); return r
+# Finnish National Gallery: paging + categories
+for q in ["limit=2&offset=50000", "limit=2&page=3", "limit=1&categoryId=artwork"]:
+    r = g("https://www.kansallisgalleria.fi/api/v1/objects?" + q)
     try:
-        r = requests.get(url, headers=UA, timeout=60)
-        print("=====", name, r.status_code)
-        print(r.text[:n].replace("\n", " "))
-    except Exception as e:
-        print("=====", name, "ERR", e)
-EU = "https://api.europeana.eu/record/v2/search.json?wskey=api2demo"
-show("eu_count_pd_painting", EU + "&query=*&qf=TYPE:IMAGE&qf=proxy_dc_type.en:painting&qf=RIGHTS:*publicdomain*&media=true&qf=MEDIA:true&reusability=open&rows=1&profile=minimal", 900)
-show("eu_facets", EU + "&query=*&qf=TYPE:IMAGE&reusability=open&media=true&rows=0&profile=facets&facet=proxy_dc_type.en&f.proxy_dc_type.en.facet.limit=40", 4000)
-show("eu_item", EU + "&query=what:painting&qf=TYPE:IMAGE&reusability=open&media=true&qf=IMAGE_SIZE:extra_large&rows=1&profile=rich", 3500)
-show("eu_cursor", EU + "&query=what:painting&qf=TYPE:IMAGE&reusability=open&media=true&rows=1&cursor=*&profile=minimal", 600)
-show("eu_rights_facet", EU + "&query=*&qf=TYPE:IMAGE&reusability=open&media=true&rows=0&profile=facets&facet=RIGHTS", 2500)
-show("si_cc0_paint", "https://api.si.edu/openaccess/api/v1.0/category/art_design/search?q=painting+AND+online_media_type%3AImages&rows=1&api_key=DEMO_KEY", 4000)
-show("mia_obj", "https://search.artsmia.org/public_access:1%20image:valid%20classification:Paintings?size=1", 3000)
-show("mia_total_pd", "https://search.artsmia.org/public_access:1%20image:valid?size=0", 500)
-show("fng_obj", "https://www.kansallisgalleria.fi/api/v1/objects?limit=2", 4000)
-show("wellcome_img", "https://api.wellcomecollection.org/catalogue/v2/images?locations.license=pdm,cc-0&pageSize=1&include=source.genres,source.contributors", 3000)
-show("ycba_rec", "https://harvester-bl.britishart.yale.edu/oaicatmuseum/OAIHandler?verb=ListRecords&metadataPrefix=lido&set=ycba:ps", 6000)
+        j = r.json(); print("FNG", q, r.status_code, len(j), [x.get("objectId") for x in j][:3], r.headers.get("x-total-count"), dict(list(r.headers.items())[:0]))
+    except Exception: print("FNG", q, r.status_code, r.text[:200])
+r = g("https://www.kansallisgalleria.fi/api/v1/objects?limit=1"); print("FNG headers", {k: v for k, v in r.headers.items() if k.lower().startswith(("x-", "link", "content-range"))})
+for u in ["https://www.kansallisgalleria.fi/api/v1/objects/count", "https://www.kansallisgalleria.fi/api/v1/", "https://www.kansallisgalleria.fi/api/docs", "https://www.kansallisgalleria.fi/media-assets/1/jpg/4000/276654.jpg"]:
+    r = g(u); print("FNG", u, r.status_code, r.headers.get("content-type"), r.text[:300].replace("\n"," ") if "image" not in (r.headers.get("content-type") or "") else len(r.content))
+# Europeana: image fields of a PD print
+r = g("https://api.europeana.eu/record/v2/search.json", params={"wskey": "api2demo", "query": "what:painting", "qf": ["TYPE:IMAGE", "RIGHTS:*publicdomain*", "IMAGE_SIZE:extra_large"], "media": "true", "rows": 2, "profile": "rich"})
+j = r.json(); print("EU total", j.get("totalResults"))
+for it in j.get("items", []):
+    print("EU item", {k: it.get(k) for k in ["id", "title", "dcCreator", "edmIsShownBy", "edmIsShownAt", "rights", "dataProvider", "year", "type", "edmPreview"]})
+# YCBA: resource section + resumption token
+r = g("https://harvester-bl.britishart.yale.edu/oaicatmuseum/OAIHandler?verb=ListRecords&metadataPrefix=lido&set=ycba:ps")
+t = r.text
+i = t.find("resourceWrap"); print("YCBA resource", re.sub(r"\s+", " ", t[i:i+2500]))
+print("YCBA token", re.findall(r"<resumptionToken[^>]*>[^<]*</resumptionToken>", t)[:1], "records", t.count("<record>"))
+r = g("https://harvester-bl.britishart.yale.edu/oaicatmuseum/OAIHandler?verb=ListSets"); print("YCBA sets", re.findall(r"<setSpec>([^<]+)</setSpec>\s*<setName>([^<]+)", r.text))
