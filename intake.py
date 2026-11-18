@@ -585,6 +585,147 @@ def src_smk():
         time.sleep(0.3)
 
 
+# ------------------------------------------- Finnish National Gallery --
+# 18 Nov 2026. One API call returns the whole collection (~89k records); keep artworks with a
+# CC0 image of print size. Images: kokoelma.kansallisgalleria.fi/media-assets/... (4000 px max).
+FNG_HOST = "https://kokoelma.kansallisgalleria.fi"
+
+
+def src_fng():
+    j = get_json("https://www.kansallisgalleria.fi/api/v1/objects") or []
+    rows = []
+    for o in j:
+        if ((o.get("category") or {}).get("categoryId") or "") != "artwork":
+            continue
+        best = None
+        for m in o.get("multimedia") or []:
+            if m.get("license") != "CC0" or not (m.get("jpg") or {}).get("4000"):
+                continue
+            if not best or (m.get("width") or 0) * (m.get("height") or 0) > (best.get("width") or 0) * (best.get("height") or 0):
+                best = m
+        if not best or max(best.get("width") or 0, best.get("height") or 0) < MIN_LONG:
+            continue
+        t = o.get("title") or {}
+        title = t.get("en") or t.get("fi") or t.get("sv") or ""
+        ppl = [p for p in o.get("people") or [] if ((p.get("role") or {}).get("en") or "").lower() in ("artist", "")]
+        artist = " ".join(x for x in ((ppl[0].get("firstName"), ppl[0].get("familyName")) if ppl else ()) if x) or "Anonymous"
+        y1, y2 = o.get("yearFrom"), o.get("yearTo")
+        date = str(y1) if y1 and (not y2 or y2 == y1) else ("%s-%s" % (y1, y2) if y1 and y2 else "")
+        rows.append({"src": "fng", "id": str(o["objectId"]), "artist": artist, "title": title, "date": date,
+                     "kind": "artwork", "w": int(best.get("width") or 0), "h": int(best.get("height") or 0),
+                     "url": FNG_HOST + best["jpg"]["4000"],
+                     "page": "https://www.kansallisgalleria.fi/en/object/%s" % o["objectId"],
+                     "license": "CC0 (Finnish National Gallery)"})
+    log("Finnish National Gallery: %d CC0 artworks of print size" % len(rows))
+    for x in rows:
+        yield x
+
+
+# ------------------------------------------- Yale Center for British Art --
+# 18 Nov 2026. OAI-PMH (LIDO) lists Paintings and Prints & Drawings; each record's IIIF manifest
+# gives title, creator, date, copyright and the image service. Public Domain only.
+YCBA_OAI = "https://harvester-bl.britishart.yale.edu/oaicatmuseum/OAIHandler"
+YCBA_SETS = [x for x in os.environ.get("YCBA_SETS", "ycba:ps,ycba:pd").split(",") if x]
+
+
+def src_ycba():
+    for st in YCBA_SETS:
+        params = {"verb": "ListRecords", "metadataPrefix": "lido", "set": st}
+        while not STOP.is_set():
+            txt = None
+            for i in range(6):
+                try:
+                    r = S.get(YCBA_OAI, params=params, timeout=180)
+                    if r.status_code == 200:
+                        txt = r.text
+                        break
+                except requests.RequestException:
+                    pass
+                time.sleep(2 ** i)
+            if not txt:
+                break
+            for rec in txt.split("<record>")[1:]:
+                if 'status="deleted"' in rec:
+                    continue
+                oid = re.search(r"<identifier>oai:tms\.ycba\.yale\.edu:(\d+)</identifier>", rec)
+                man = re.search(r"<lido:linkResource[^>]*>(https://manifests\.collections\.yale\.edu/v2/ycba/obj/\d+)</lido:linkResource>", rec)
+                kind = re.search(r"<lido:classification>.*?<lido:term>([^<]+)</lido:term>", rec, re.S)
+                if not (oid and man):
+                    continue
+                k = (kind.group(1) if kind else "").lower()
+                if k and not re.search(r"paint|drawing|print|watercolo|pastel|poster", k):
+                    continue
+                yield {"src": "ycba", "id": oid.group(1), "artist": None, "title": None, "date": "",
+                       "kind": k or st, "w": 0, "h": 0, "url": None, "manifest": man.group(1),
+                       "page": "https://collections.britishart.yale.edu/catalog/tms:%s" % oid.group(1),
+                       "license": "Public domain (Yale Center for British Art)"}
+            tok = re.search(r"<resumptionToken[^>]*>([^<]+)</resumptionToken>", txt)
+            if not tok:
+                break
+            params = {"verb": "ListRecords", "resumptionToken": tok.group(1)}
+
+
+def resolve_ycba(it):
+    m = get_json(it["manifest"])
+    if not m:
+        return None
+    md = {x.get("label"): x.get("value") for x in m.get("metadata") or [] if isinstance(x, dict)}
+    if "public domain" not in str(md.get("Copyright Statement") or "").lower():
+        return None
+    try:
+        res = m["sequences"][0]["canvases"][0]["images"][0]["resource"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    svc = (res.get("service") or {}).get("@id")
+    if not svc:
+        return None
+    it["artist"] = re.sub(r",?\s*\d{4}\s*[-–]\s*\d{4}.*$", "", str(md.get("Creator") or "Anonymous")).strip()
+    it["title"] = str(md.get("Title") or "")
+    lab = str(m.get("label") or "")
+    y = re.search(r"((?:ca\.\s*)?\d{4}(?:\s*[-–]\s*\d{2,4})?)\s*$", lab)
+    it["date"] = y.group(1) if y else ""
+    it["w"], it["h"] = int(res.get("width") or 0), int(res.get("height") or 0)
+    it["iiif"] = svc
+    return it
+
+
+# ------------------------------------------------- Wellcome Collection --
+# 18 Nov 2026. Images API, Public Domain Mark / CC0 only, wall-art genres (prints, paintings,
+# drawings, posters). Paged per genre so no single listing gets too deep.
+WELLCOME_GENRES = ["Paintings", "Watercolours", "Drawings", "Posters", "Woodcuts", "Engravings", "Etchings",
+                   "Lithographs", "Chromolithographs", "Aquatints", "Mezzotints", "Colour prints",
+                   "Line engravings", "Stipple engravings", "Gouaches", "Pastels", "Wood engravings"]
+
+
+def src_wellcome():
+    for gname in WELLCOME_GENRES:
+        url = "https://api.wellcomecollection.org/catalogue/v2/images"
+        params = {"locations.license": "pdm,cc-0", "source.genres.label": gname, "pageSize": 100,
+                  "include": "source.genres,source.contributors"}
+        while url and not STOP.is_set():
+            j = get_json(url, params=params)
+            params = None
+            if not j:
+                break
+            for r in j.get("results") or []:
+                loc = (r.get("locations") or [{}])[0]
+                lic = ((loc.get("license") or {}).get("id") or "")
+                if lic not in ("pdm", "cc-0") or not str(loc.get("url", "")).endswith("/info.json"):
+                    continue
+                src = r.get("source") or {}
+                cons = src.get("contributors") or []
+                artist = ((cons[0].get("agent") or {}).get("label") if cons else "") or "Anonymous"
+                title = re.sub(r"\.\s*(Woodcut|Engraving|Etching|Lithograph|Colour lithograph|Watercolour|Oil painting|Drawing|Aquatint|Mezzotint)[^.]*\.?\s*$",
+                               "", str(src.get("title") or "")).strip()
+                yield {"src": "wellcome", "id": str(r["id"]), "artist": artist, "title": title,
+                       "date": "", "kind": gname.lower(), "w": 0, "h": 0, "url": None,
+                       "iiif": loc["url"][:-len("/info.json")],
+                       "page": "https://wellcomecollection.org/works/%s" % src.get("id", ""),
+                       "license": "Public domain (Wellcome Collection, %s)" % lic.upper()}
+            url = j.get("nextPage")
+            time.sleep(0.2)
+
+
 IIIF_TILE = 3800
 
 
@@ -624,15 +765,17 @@ def iiif_image(base, w=0, h=0):
     return out
 
 
-SRC = {"nga": src_nga, "met": src_met, "cleveland": src_cleveland, "aic": src_aic, "rijks": src_rijks, "smk": src_smk}
+SRC = {"nga": src_nga, "met": src_met, "cleveland": src_cleveland, "aic": src_aic, "rijks": src_rijks, "smk": src_smk,
+       "fng": src_fng, "ycba": src_ycba, "wellcome": src_wellcome}  # fng/ycba/wellcome added 18 Nov 2026
 
 
 # ----------------------------------------------------------------- main --
 def fetch_image(it):
     """Returns (image, original jpeg bytes or None)."""
     if it.get("iiif"):
-        return iiif_image(it["iiif"], it.get("w") if it["src"] == "nga" else 0,
-                          it.get("h") if it["src"] == "nga" else 0), None
+        known_wh = it["src"] in ("nga", "ycba")   # sizes from the museum's own record
+        return iiif_image(it["iiif"], it.get("w") if known_wh else 0,
+                          it.get("h") if known_wh else 0), None
     r = S.get(it["url"], timeout=600)
     if r.status_code != 200:
         raise RuntimeError("HTTP %s" % r.status_code)
@@ -740,6 +883,12 @@ class Run:
             it = resolve_rijks(it)
             if not it:
                 return  # no public image (or record) right now; retried on a later run
+        if it["src"] == "ycba" and it["title"] is None:
+            if it["id"] in done and not os.environ.get("RECHECK"):
+                return
+            it = resolve_ycba(it)
+            if not it:
+                return  # not public domain / no image; retried on a later run
         ks = keys(it["artist"], it["title"])
         weak_hit = bool(self.cat) and any(x in self.cat.weak_keys for x in ks)
         tag = it["src"] + ":" + it["id"]
