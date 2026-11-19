@@ -188,11 +188,16 @@ def have_index():
 
 
 def already_have(w, idx):
+    """Conservative on purpose: a missed gap costs little, a second copy of a work we sell costs trust.
+    Same artist and: same title key, or every word of the famous title in ours ('Night Watch Militia Company...'),
+    or a short famous title (1-2 words) that our title starts or ends with ('The Kiss' ~ 'The kiss lovers 1908')."""
     cands = idx.get(w["surname"]) or []
     for key in w["keys"]:
         kw = frozenset(key.split())
         for k, kws in cands:
-            if key == k or (len(kw) >= 2 and kw <= kws) or (len(kw) == 1 and key == k):
+            if key == k or (len(kw) >= 2 and kw <= kws):
+                return True
+            if len(kw) <= 2 and (k.startswith(key + " ") or k.endswith(" " + key)):
                 return True
     return False
 
@@ -276,6 +281,18 @@ def main():
     namer = artist_namer()
 
     gaps = [w for w in works.values() if w["surname"] and not already_have(w, have)]
+
+    # works already on the wanted list that the catalog has since got (sold under another title, listed by hand,
+    # or caught by the stricter rule above) come off the list so they're never bought twice
+    stale = []
+    for r in catalog_mod.rpc_offset_all(CFG, "intake_wanted_open"):
+        w = works.get(r.get("qid") or "")
+        probe = w or {"surname": surname_of(r["artist"]), "keys": {pnorm(r["title"])}}
+        if probe["surname"] and already_have(probe, have):
+            stale.append(r["id"])
+    if stale and not DRY:
+        catalog_mod._rpc(CFG, "intake_wanted_skip", p_ids=stale, p_note="skipped: the catalog already sells it")
+    log("wanted works the catalog already sells, taken off the list: %d" % len(stale))
     gaps.sort(key=lambda w: -(w["links"] + (5 if w["reason"] == "top artist gap" else 0)))
     log("candidates %d | already sold %d | gaps %d" % (len(works), len(works) - len(gaps), len(gaps)))
 
