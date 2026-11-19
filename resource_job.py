@@ -596,6 +596,20 @@ class Job:
             fh.write("Re-source: targeted %(targets)d, better copy found %(found)d, no copy %(miss)d, errors %(error)d\n" % self.n)
 
 
+def report_wanted(wid, found, drive_file_id, result):
+    """intake_wanted_report returns nothing, so the API answers 204 (catalog._rpc only accepts 200).
+    One plain request; a failed report is logged and the run carries on (the file is already queued)."""
+    try:
+        r = S.post(CFG["db_url"] + "/rest/v1/rpc/intake_wanted_report", timeout=60,
+                   headers={"apikey": CFG["db_key"], "Content-Type": "application/json"},
+                   json={"p_token": CFG["db_token"], "p_id": wid, "p_found": found,
+                         "p_drive_file_id": drive_file_id, "p_result": result})
+        if r.status_code not in (200, 204):
+            log("  (couldn't record the result for wanted #%s: HTTP %s)" % (wid, r.status_code))
+    except Exception as ex:
+        log("  (couldn't record the result for wanted #%s: %s)" % (wid, str(ex)[:120]))
+
+
 def run_wanted(job):
     """Every still-wanted work, every run (the list is short). Found -> intake_queue 'new' with quality.wanted_id;
     the brain's promote-intake.js lists those first, even while bulk promotion is off."""
@@ -619,9 +633,8 @@ def run_wanted(job):
         if ok:
             found += 1
         if not DRY:
-            catalog_mod._rpc(CFG, "intake_wanted_report", p_id=w["id"], p_found=ok,
-                             p_drive_file_id=(detail or {}).get("id") if ok else None,
-                             p_result=detail if isinstance(detail, (dict, list)) else {"error": str(detail)})
+            report_wanted(w["id"], ok, (detail or {}).get("id") if ok and isinstance(detail, dict) else None,
+                          detail if isinstance(detail, (dict, list)) else {"error": str(detail)})
     job.save()
     log("WANTED DONE: %d of %d found" % (found, len(rows)))
     with open(os.environ.get("GITHUB_STEP_SUMMARY", "/dev/null"), "a") as fh:
