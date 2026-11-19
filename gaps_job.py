@@ -241,8 +241,16 @@ def artist_namer():
         toks = R.name_tokens(creator)
         if not toks:
             return creator
-        hits = {a: n for t in set(toks) for n, a in by_tok.get(t, []) if R.artist_ok(a, creator, [])}
-        hits.update({a: n for t in set(toks) for n, a in by_tok.get(t, []) if R.artist_ok(creator, a, [])})
+        # strict: every word of one name is in the other ('Rembrandt' / 'Rembrandt van Rijn'), the surname agrees,
+        # and a one-word name only maps when that artist is unambiguous. Never 'Hieronymus Bosch' -> 'Hendrik van den Bosch'.
+        mine, hits = set(toks), {}
+        for t in mine:
+            for n, a in by_tok.get(t, []):
+                theirs = set(R.name_tokens(a))
+                if theirs and toks[-1] in theirs and (mine <= theirs or theirs <= mine):
+                    hits[a] = n
+        if len(mine) == 1 and len(hits) > 1:
+            return creator
         return max(hits, key=hits.get) if hits else creator
     return name
 
