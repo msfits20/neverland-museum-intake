@@ -433,6 +433,7 @@ class Job:
             return
         self.state["done"] = self.done
         self.state["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+<<<<<<< Updated upstream
         # 19 Nov 2026: a Drive hiccup here used to crash the whole part; retry, and if Drive still
         # refuses, keep going (the next save writes the same state again)
         for i in range(5):
@@ -448,6 +449,19 @@ class Job:
                 log("state save failed (%s), retrying" % str(e)[:120])
                 time.sleep(30 * (i + 1))
         log("state save still failing; carrying on, will retry at the next save")
+=======
+        # 19 Nov 2026: a Drive rate-limit on a progress save no longer kills the
+        # part; the hits stay in memory and go out with the next save.
+        try:
+            self.d.write_json(STATE, self.state)
+            if self.hits:
+                name = "log-%s-resource.jsonl" % time.strftime("%Y%m%d-%H%M%S")
+                self.d.upload(name, self.d.state_dir, "\n".join(json.dumps(x) for x in self.hits).encode(),
+                              "application/json")
+                self.hits = []
+        except Exception as e:
+            log("progress save failed, will retry at the next save: %s" % str(e)[:160])
+>>>>>>> Stashed changes
 
     def due(self, t):
         e = self.done.get(t["drive_file_id"])

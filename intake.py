@@ -17,6 +17,7 @@ it created itself, so it cannot see or touch any other folder.
 - Stops by itself when Drive free space falls below FLOOR_GB.
 - Pause: set the repository variable PAUSED to 1, or disable the workflow.
 """
+import random
 import csv
 import gzip
 import hashlib
@@ -169,17 +170,22 @@ class Drive:
             return self.tok
 
     def req(self, method, url, **kw):
-        for i in range(6):
-            h = kw.pop("headers", {})
+        base = kw.pop("headers", {}) or {}
+        r = None
+        for i in range(10):
+            # 19 Nov 2026: copy the headers each try (the old pop() dropped
+            # X-Upload-* on retries) and back off longer with jitter: many jobs
+            # share one Google account, so "User rate limit exceeded" needs minutes.
+            h = dict(base)
             h["Authorization"] = "Bearer " + self.token()
             try:
                 r = S.request(method, url, headers=h, timeout=300, **kw)
             except requests.RequestException:
-                time.sleep(2 ** i)
+                time.sleep(min(60, 2 ** i) + random.random() * 3)
                 continue
             if r.status_code in (429, 500, 502, 503, 504) or (
                     r.status_code == 403 and "rate" in r.text.lower()):
-                time.sleep(2 ** i + 1)
+                time.sleep(min(90, 2 ** i + 1) + random.random() * 5)
                 continue
             if r.status_code == 403 and "uploadLimitExceeded" in r.text:
                 log("Google's daily upload limit reached - stopping for today")
