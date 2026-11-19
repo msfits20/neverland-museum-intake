@@ -11,3 +11,5 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -q requests && python tools/probe.py
+        env:
+          NEVERLAND_READ: ${{ secrets.NEVERLAND_READ }}
