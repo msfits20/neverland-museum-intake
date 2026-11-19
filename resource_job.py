@@ -74,6 +74,14 @@ OLD_STATE = "resource-state.json"  # the single-part run's history (read so old 
 MISSES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resource_misses%s.jsonl" % _SFX)
 T0 = time.time()
 DPI = 150
+# 19 Nov 2026 (Tobi): MODE=wanted looks for famous works the store shows or wants but doesn't sell yet
+# (table intake_wanted, e.g. the homepage hero paintings). No catalog copy to compare against, so the
+# match is by name: same artist, the original's year (+/- WANTED_YEAR_TOL), never an engraving/copy "after" it.
+# A search_hint naming a Wikimedia Commons file is looked up directly and trusted for title and year.
+WANTED = os.environ.get("MODE") == "wanted"
+WANTED_YEAR_TOL = int(os.environ.get("WANTED_YEAR_TOL", "3"))
+NOT_ORIGINAL = re.compile(r"\b(after|engrav\w*|etching|lithograph\w*|mezzotint|woodcut|copy|copies|reproduction|"
+                          r"print(?:ed)? by|stud(?:y|ies)|sketch|detail|fragment|tapestry|photograph)\b", re.I)
 
 
 # ------------------------------------------------------------- matching --
@@ -263,12 +271,10 @@ def _strip(html):
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(html or ""))).strip()
 
 
-def c_commons(t):
-    j = get_json("https://commons.wikimedia.org/w/api.php", params={
-        "action": "query", "format": "json", "generator": "search", "gsrnamespace": 6, "gsrlimit": 20,
-        "gsrsearch": '%s "%s" filetype:bitmap' % (t["artist"], t["q_title"]),
-        "prop": "imageinfo|categories", "cllimit": 50, "iiprop": "url|size|mime|extmetadata",
-        "iiurlwidth": 800})
+def _commons_pages(params, hint=False):
+    j = get_json("https://commons.wikimedia.org/w/api.php", params=dict({
+        "action": "query", "format": "json", "prop": "imageinfo|categories", "cllimit": 50,
+        "iiprop": "url|size|mime|extmetadata", "iiurlwidth": 800}, **params))
     out = []
     for p in ((j or {}).get("query") or {}).get("pages", {}).values():
         ii = (p.get("imageinfo") or [{}])[0]
@@ -282,8 +288,8 @@ def c_commons(t):
         cats = " ".join(c.get("title", "") for c in p.get("categories") or [])
         desc = _strip((md.get("ImageDescription") or {}).get("value"))
         name = p.get("title", "")
-        if NOT_ALONE.search(name) or NOT_ALONE.search(desc[:400]) or re.search(
-                r"framed|frames|in situ|exhibitions?|installation views?|color ?checker|ruler", cats, re.I):
+        if not hint and (NOT_ALONE.search(name) or NOT_ALONE.search(desc[:400]) or re.search(
+                r"framed|frames|in situ|exhibitions?|installation views?|color ?checker|ruler", cats, re.I)):
             continue
         title = _strip((md.get("ObjectName") or {}).get("value")) or \
             re.sub(r"\.\w+$", "", name.split(":", 1)[-1])
@@ -291,9 +297,20 @@ def c_commons(t):
                     "title": title, "date": _strip((md.get("DateTimeOriginal") or {}).get("value")),
                     "kind": "", "w": int(ii.get("width") or 0), "h": int(ii.get("height") or 0),
                     "url": ii.get("url"), "preview": ii.get("thumburl") or ii.get("url"),
-                    "page": ii.get("descriptionurl"),
+                    "page": ii.get("descriptionurl"), "hint": hint,
                     "license": "Public domain (Wikimedia Commons: %s)" % (lic or lic2)[:60]})
     time.sleep(0.5)
+    return out
+
+
+def c_commons(t):
+    out = []
+    hint = t.get("search_hint") or ""
+    m = re.match(r"\s*Wikimedia Commons:\s*(.+?)\s*$", hint)
+    if m:   # the exact file we picked for a wanted work
+        out += _commons_pages({"titles": "File:" + m.group(1).strip('"')}, hint=True)
+    out += _commons_pages({"generator": "search", "gsrnamespace": 6, "gsrlimit": 20,
+                           "gsrsearch": '%s "%s" filetype:bitmap' % (t["artist"], t["q_title"])})
     return out
 
 
@@ -330,6 +347,9 @@ def prepare(t):
     q = re.sub(r"\b(ca|c\.|circa)\b\.?", " ", q, flags=re.I)
     t["q_title"] = re.sub(r"\s+", " ", q).strip(" -,.")
     t["strict"] = t["verdict"] in ("broken", "missing")
+    if t.get("wanted"):
+        t["year"] = year_of(t.get("wanted_year"))
+        t["strict"] = True
     return t
 
 
@@ -340,6 +360,20 @@ def judge(t, c, ours_ph, ours_small):
         return False, dict(info, why="artist")
     ts = title_score(t["q_title"], c["title"])
     info["title_score"] = ts
+    if t.get("wanted"):
+        if NOT_ORIGINAL.search(" ".join([c.get("title") or "", c.get("kind") or "", c.get("artist") or ""])):
+            return False, dict(info, why="not the original (copy/print/study)")
+        if not c.get("hint"):
+            if ts < STRICT_TITLE_MIN:
+                return False, dict(info, why="title")
+            cy = year_of(c.get("date"), c.get("title"))
+            if not (t["year"] and cy and abs(int(cy) - int(t["year"])) <= WANTED_YEAR_TOL):
+                return False, dict(info, why="year %s vs %s" % (cy or "?", t["year"] or "?"))
+        pv = fetch(c["preview"], {"AIC-User-Agent": intake.UA}) if c.get("preview") else None
+        if pv is None:
+            return False, dict(info, why="no preview")
+        c["_pv"] = pv
+        return True, info
     strict = t["strict"] or not ours_ph
     if ts < (STRICT_TITLE_MIN if strict else TITLE_MIN):
         return False, dict(info, why="title")
@@ -437,8 +471,8 @@ class Job:
                 if ok:
                     cands.append((c, info))
         # biggest first; download and check the full picture
-        cands.sort(key=lambda x: -max(x[0]["w"], x[0]["h"]))
-        for c, info in cands[:3]:
+        cands.sort(key=lambda x: (not x[0].get("hint"), -max(x[0]["w"], x[0]["h"])))
+        for c, info in cands[:(5 if t.get("wanted") else 3)]:
             res = self.take(t, c, info, ours_ph)
             if res:
                 return "found", res
@@ -453,7 +487,7 @@ class Job:
         im, data = intake.finish(im, data)
         rgb = im.convert("RGB")
         w, h = rgb.size
-        if not aspect_ok(w, h, t["width_px"], t["height_px"]):
+        if aspect_ok(w, h, t["width_px"], t["height_px"]) is False:
             info["why"] = "aspect (full)"
             return None
         factor = review.true_factor(rgb.convert("L"), w, h)
@@ -480,10 +514,12 @@ class Job:
             return None
         artist = safe(t["artist"] or "Unknown Artist", 80)
         tier = intake.tier_of(w, h)
-        name = intake.file_name(c["title"] or t["q_title"], c.get("date") or t["year"], w, h)
+        title = t["title"] if t.get("wanted") else (c["title"] or t["q_title"])  # wanted: the recognised name
+        name = intake.file_name(title, c.get("date") or t["year"], w, h)
         q = {"kind": c.get("kind"), "date": c.get("date"), "jpeg_quality": None, "upscale_factor": factor,
              "max_sharp_long_in": sharp, "frame_score": fs, "marks_score": ms,
-             "upgrade_for": t["drive_file_id"],
+             "upgrade_for": None if t.get("wanted") else t["drive_file_id"],
+             "wanted_id": t.get("wanted_id"),
              "resource": {"target_verdict": t["verdict"], "our_sharp_in": t["sharp_in"],
                           "match": {k: info.get(k) for k in ("title_score", "dist", "dist_full", "details")},
                           "strict": t["strict"]}}
@@ -493,14 +529,15 @@ class Job:
         parent = self.d.folder((artist, tier))
         fid = self.d.find(name, parent) or self.d.upload(name, parent, data)
         row = {"drive_file_id": fid, "filename": name, "filepath": "%s/%s/%s" % (artist, tier, name),
-               "file_size_bytes": len(data), "artist": t["artist"], "title": c["title"] or t["title"],
+               "file_size_bytes": len(data), "artist": t["artist"], "title": title,
                "source": c["src"], "source_id": c["id"], "source_url": c.get("page"),
                "license": c.get("license"), "width_px": w, "height_px": h, "phash": ph,
                "quality": q, "status": "new", "hold_reason": None, "duplicate_of": None}
         catalog_mod._rpc(CFG, "intake_submit", p_kind="candidate", p_rows=[row])
         self.hits.append({k2: c.get(k2) for k2 in ("src", "id", "artist", "title", "date", "kind", "page", "license")} |
                          {"file": row["filepath"], "w": w, "h": h, "bytes": len(data), "cphash": ph,
-                          "upgrade_for": t["drive_file_id"], "resource": True})
+                          "upgrade_for": None if t.get("wanted") else t["drive_file_id"],
+                         "wanted_id": t.get("wanted_id"), "resource": True})
         log("  saved %s (%.1f in, ours %s %s)" % (row["filepath"], sharp, t["verdict"], t["sharp_in"]))
         return {"file": row["filepath"], "id": fid, "sharp": sharp}
 
@@ -550,9 +587,44 @@ class Job:
             fh.write("Re-source: targeted %(targets)d, better copy found %(found)d, no copy %(miss)d, errors %(error)d\n" % self.n)
 
 
+def run_wanted(job):
+    """Every still-wanted work, every run (the list is short). Found -> intake_queue 'new' with quality.wanted_id;
+    the brain's promote-intake.js lists those first, even while bulk promotion is off."""
+    if not DRY and job.d.free_gb() < FLOOR_GB:
+        log("Not enough Drive space - not starting.")
+        return
+    rows = catalog_mod._rpc(CFG, "intake_wanted_targets") or []
+    log("wanted works still to find: %d" % len(rows))
+    found = 0
+    for w in rows:
+        t = {"wanted": True, "wanted_id": w["id"], "wanted_year": w.get("year"), "search_hint": w.get("search_hint"),
+             "drive_file_id": "wanted-%s" % w["id"], "artist": w["artist"], "title": w["title"], "filename": "",
+             "catalog_artist_aliases": w.get("catalog_artist_aliases") or [], "width_px": None, "height_px": None,
+             "verdict": "missing", "sharp_in": None, "phash": None}
+        try:
+            res, detail = job.one(t)
+        except Exception as ex:
+            res, detail = "error", str(ex)[:160]
+        ok = res == "found" and not (isinstance(detail, dict) and detail.get("dry"))
+        log("  %s - %s: %s" % (w["artist"], w["title"], res))
+        if ok:
+            found += 1
+        if not DRY:
+            catalog_mod._rpc(CFG, "intake_wanted_report", p_id=w["id"], p_found=ok,
+                             p_drive_file_id=(detail or {}).get("id") if ok else None,
+                             p_result=detail if isinstance(detail, (dict, list)) else {"error": str(detail)})
+    job.save()
+    log("WANTED DONE: %d of %d found" % (found, len(rows)))
+    with open(os.environ.get("GITHUB_STEP_SUMMARY", "/dev/null"), "a") as fh:
+        fh.write("Wanted works: %d of %d found\n" % (found, len(rows)))
+
+
 def main():
     if os.environ.get("PAUSED") == "1":
         log("Paused (repository variable PAUSED=1). Nothing to do.")
+        return
+    if WANTED:
+        run_wanted(Job())
         return
     Job().run()
 

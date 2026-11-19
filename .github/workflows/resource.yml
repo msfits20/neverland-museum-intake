@@ -1,6 +1,7 @@
 name: Re-source unfit catalog copies
 
 # Tobi, 17 Nov 2026: find a better copy of every unfit catalog image instead of hiding it.
+# 19 Nov 2026: part 0 first looks for every work on the wanted list (table intake_wanted).
 # 18 Nov 2026: 8 parts side by side, every 6 hours, 300 targets per part; picks up where it stopped (state in Drive).
 on:
   push:            # first upload (or any change to the job) = a 20-target test run
@@ -41,6 +42,18 @@ jobs:
       - run: |
           pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cpu
           pip install -q open_clip_torch numpy pillow imagehash requests opencv-python-headless
+      - name: Look for wanted works (famous pieces we show or want but don't sell yet)
+        if: matrix.shard == 0
+        continue-on-error: true
+        env:
+          MODE: wanted
+          GOOGLE_AUTH: ${{ secrets.GOOGLE_AUTH }}
+          NEVERLAND_READ: ${{ secrets.NEVERLAND_READ }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
+          FLOOR_GB: ${{ vars.FLOOR_GB || '150' }}
+          SHARD_N: "8"
+          SHARD_I: "0"
+        run: python resource_job.py
       - name: Look up better copies (store and catalog folders are not changed)
         env:
           GOOGLE_AUTH: ${{ secrets.GOOGLE_AUTH }}
