@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: [0, 1, 2, 3]   # 19 Nov 2026: 4 parts (was 8) so the intake gets runner slots (free plan = 20 jobs at once)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -47,7 +47,7 @@ jobs:
           GOOGLE_AUTH: ${{ secrets.GOOGLE_AUTH }}
           NEVERLAND_READ: ${{ secrets.NEVERLAND_READ }}
           SHARD: ${{ matrix.shard }}
-          SHARDS: "8"
+          SHARDS: "4"
           CALIBRATE: ${{ github.event.inputs.calibrate || '0' }}
           REDO: ${{ github.event.inputs.redo || '0' }}
           FRAME_T: ${{ github.event.inputs.frame_t || '0.6' }}
