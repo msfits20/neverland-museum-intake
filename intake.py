@@ -727,6 +727,79 @@ def src_wellcome():
             time.sleep(0.2)
 
 
+# ----------------------------------------------------------- Smithsonian --
+# 19 Nov 2026. Open Access API (api.data.gov key kept in the database: intake_config 'si_api_key').
+# CC0 images only, art museums, wall-art object types; high-resolution JPEG download.
+SI_UNITS = [x for x in os.environ.get("SI_UNITS", "SAAM,NPG,HMSG,FSG,CHNDM,NMAfA,NMAH,ACAH").split(",") if x]
+SI_TYPES = ["Paintings", "Drawings", "Prints", "Watercolors", "Posters", "Pastels (visual works)",
+            "Lithographs", "Etchings", "Woodcuts", "Engravings", "Screenprints", "Gouaches"]
+
+
+def si_key():
+    raw = os.environ.get("NEVERLAND_READ")
+    if not raw:
+        return None
+    c = json.loads(raw)
+    for i in range(6):
+        try:
+            r = requests.post(c["db_url"] + "/rest/v1/rpc/intake_get_config",
+                              json={"p_token": c["db_token"], "p_key": "si_api_key"},
+                              headers={"apikey": c["db_key"], "Content-Type": "application/json"}, timeout=60)
+            if r.status_code == 200:
+                return r.json()
+        except requests.RequestException:
+            pass
+        time.sleep(2 ** i)
+    return None
+
+
+def src_si():
+    key = si_key()
+    if not key:
+        log("Smithsonian: no API key - skipped")
+        return
+    for unit in SI_UNITS:
+        for typ in SI_TYPES:
+            q = 'online_media_type:"Images" AND media_usage:CC0 AND unit_code:%s AND object_type:"%s"' % (unit, typ)
+            start, total = 0, None
+            while not STOP.is_set():
+                j = get_json("https://api.si.edu/openaccess/api/v1.0/search",
+                             params={"q": q, "rows": 1000, "start": start, "api_key": key})
+                resp = (j or {}).get("response") or {}
+                rows = resp.get("rows") or []
+                if total is None:
+                    total = resp.get("rowCount") or 0
+                    if total:
+                        log("Smithsonian %s / %s: %d records" % (unit, typ, total))
+                if not rows:
+                    break
+                for row in rows:
+                    c = row.get("content") or {}
+                    ft, dnr = c.get("freetext") or {}, c.get("descriptiveNonRepeating") or {}
+                    media = [m for m in ((dnr.get("online_media") or {}).get("media") or [])
+                             if m.get("type") == "Images" and (m.get("usage") or {}).get("access") == "CC0"]
+                    best = None
+                    for m in media:
+                        for res in m.get("resources") or []:
+                            if res.get("label") == "High-resolution JPEG" and res.get("url"):
+                                if not best or (res.get("width") or 0) * (res.get("height") or 0) > (best.get("width") or 0) * (best.get("height") or 0):
+                                    best = res
+                    if not best or max(best.get("width") or 0, best.get("height") or 0) < MIN_LONG:
+                        continue
+                    names = [n.get("content", "") for n in ft.get("name") or [] if n.get("label") in ("Artist", "Maker", "Designer", "Printmaker", "Painter")]
+                    artist = re.split(r",\s*(?:American|born|b\.|active|English|French|British|German|Dutch|Italian|Japanese|Chinese|\d)", names[0])[0].strip() if names else "Anonymous"
+                    date = ((ft.get("date") or [{}])[0].get("content") or "")
+                    date = "" if date.lower() in ("n.d.", "nd") else date
+                    yield {"src": "si", "id": dnr.get("record_ID") or row.get("id"), "artist": artist or "Anonymous",
+                           "title": (dnr.get("title") or {}).get("content") or row.get("title") or "",
+                           "date": date, "kind": typ.lower(), "w": int(best.get("width") or 0), "h": int(best.get("height") or 0),
+                           "url": best["url"], "page": dnr.get("record_link") or "",
+                           "license": "CC0 (Smithsonian, %s)" % unit}
+                start += len(rows)
+                if start >= total:
+                    break
+
+
 IIIF_TILE = 3800
 
 
@@ -767,7 +840,7 @@ def iiif_image(base, w=0, h=0):
 
 
 SRC = {"nga": src_nga, "met": src_met, "cleveland": src_cleveland, "aic": src_aic, "rijks": src_rijks, "smk": src_smk,
-       "fng": src_fng, "ycba": src_ycba, "wellcome": src_wellcome}  # fng/ycba/wellcome added 18 Nov 2026
+       "fng": src_fng, "ycba": src_ycba, "wellcome": src_wellcome, "si": src_si}  # fng/ycba/wellcome added 18 Nov 2026
 
 
 # ----------------------------------------------------------------- main --

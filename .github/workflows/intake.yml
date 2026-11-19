@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [fng, ycba, wellcome, rijks, smk, nga, met, cleveland]   # side by side; fng/ycba/wellcome added 18 Nov; aic dropped 18 Nov (its image server blocks GitHub)
+        part: [si, ycba, rijks, fng, wellcome, smk, nga, met, cleveland]   # side by side; fng/ycba/wellcome added 18 Nov; aic dropped 18 Nov (its image server blocks GitHub); si (Smithsonian) added 19 Nov
         shard: [0, 1, 2]                   # 16 Nov 2026: each museum in 3 parts at once (12 jobs)
     steps:
       - uses: actions/checkout@v4
