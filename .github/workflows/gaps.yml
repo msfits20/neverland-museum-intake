@@ -1,0 +1,32 @@
+name: Find famous works we don't sell
+# 19 Nov 2026 (Tobi): "Keep sourcing for famous artworks we don't have ... our lapses, top artists ... find the best."
+# Weekly: Wikidata's most famous paintings/prints/drawings + the top catalog artists' best-known works, minus what
+# the catalog already sells. Gaps already in the intake folder are tagged for listing; the rest go on the wanted
+# list (intake_wanted), which "Re-source unfit catalog copies" searches every 6 hours (MODE=wanted).
+on:
+  schedule:
+    - cron: "17 2 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "1 = report only, write nothing"
+        default: "0"
+concurrency:
+  group: gaps
+  cancel-in-progress: false
+jobs:
+  gaps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q numpy pillow imagehash requests
+      - name: Find the gaps
+        env:
+          NEVERLAND_READ: ${{ secrets.NEVERLAND_READ }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
+          PAUSED: ${{ vars.PAUSED }}
+        run: python gaps_job.py

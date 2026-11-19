@@ -48,3 +48,11 @@ sources above for each one (`MODE=wanted`): same artist, the original's year (wi
 engraving, copy, study or detail made after it. A Wikimedia Commons file named in `search_hint` is tried first.
 Found files go into **Neverland Museum Intake** and `intake_queue` as `new` with `quality.wanted_id`; the brain
 lists them before anything else. Add a work: insert a row into `intake_wanted` (status `wanted`).
+
+## Gap finder (19 Nov 2026) — `gaps_job.py`, workflow "Find famous works we don't sell" (Mondays)
+Wikidata's most famous paintings, prints, drawings and frescoes (>= 15 Wikipedia/Wikimedia pages) plus the
+best-known works (>= 6 pages) of the catalog's top 150 artists, by artists who died 70+ years ago and made before
+1930. Anything the catalog already sells is skipped (title keys + artist, or the catalog title containing every
+word of the famous title). A gap already sitting in the intake folder is tagged `quality.wanted_id` and listed
+within the hour; the rest go on the wanted list, most famous first, 40 searched every 6 hours (a miss waits 7 days).
+Artist names are mapped to the catalog's own spelling so new pieces join the artist's existing page.

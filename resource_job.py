@@ -616,7 +616,8 @@ def run_wanted(job):
     if not DRY and job.d.free_gb() < FLOOR_GB:
         log("Not enough Drive space - not starting.")
         return
-    rows = catalog_mod._rpc(CFG, "intake_wanted_targets") or []
+    # highest priority first; a miss waits 7 days before it's tried again (the gap finder can add hundreds)
+    rows = catalog_mod._rpc(CFG, "intake_wanted_batch", p_limit=int(os.environ.get("WANTED_PER_RUN", "40"))) or []
     log("wanted works still to find: %d" % len(rows))
     found = 0
     for w in rows:
