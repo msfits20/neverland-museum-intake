@@ -21,6 +21,7 @@ import random
 import csv
 import gzip
 import hashlib
+import html
 import io
 import json
 import os
@@ -865,6 +866,89 @@ def src_europeana():
         log("Europeana %s: %d listed" % (term, n))
 
 
+# ---------------------------------------------- Google Art Project (Commons) --
+# 20 Nov 2026 (Tobi: "source the harder, rarer ones, especially popular rare"): Wikimedia Commons holds the
+# Google Art Project's very large public-domain copies (often 8,000-12,000 px) of paintings from ~400 museums,
+# many of which aren't open access themselves (Uffizi, Hermitage, Tate, Van Gogh Museum, Belvedere...).
+GAP_API = "https://commons.wikimedia.org/w/api.php"
+GAP_ROOTS = ["Category:Google Art Project paintings", "Category:Google Art Project works by collection"]
+GAP_PD = re.compile(r"^(public domain|pd[- ]|cc0|cc-zero)", re.I)
+GAP_NOT_ART = re.compile(r"\b(sculpture|statue|bust|vase|bowl|cup|plate|coin|medal|armou?r|helmet|chair|table|"
+                         r"textile|carpet|tapestry fragment|jewel|ring|brooch|mask|photograph|fotograf|ceramic|porcelain)\b", re.I)
+
+
+def _gap_strip(v):
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html.unescape(str(v or "")))).strip()
+
+
+def _gap_members(cat, kind):
+    cont = {}
+    while not STOP.is_set():
+        j = get_json(GAP_API, params=dict({"action": "query", "format": "json", "list": "categorymembers",
+                                           "cmtitle": cat, "cmtype": kind, "cmlimit": 500}, **cont))
+        if not j:
+            return
+        for m in (j.get("query") or {}).get("categorymembers", []):
+            yield m["title"]
+        if "continue" not in j:
+            return
+        cont = {"cmcontinue": j["continue"]["cmcontinue"]}
+        time.sleep(0.3)
+
+
+def _gap_files(titles):
+    j = get_json(GAP_API, params={"action": "query", "format": "json", "titles": "|".join(titles),
+                                  "prop": "imageinfo", "iiprop": "url|size|mime|extmetadata"})
+    for p in ((j or {}).get("query") or {}).get("pages", {}).values():
+        ii = (p.get("imageinfo") or [{}])[0]
+        if ii.get("mime") not in ("image/jpeg", "image/png", "image/tiff"):
+            continue
+        md = ii.get("extmetadata") or {}
+        lic = _gap_strip((md.get("LicenseShortName") or {}).get("value"))
+        if not GAP_PD.match(lic):
+            continue
+        name = p.get("title", "")
+        title = _gap_strip((md.get("ObjectName") or {}).get("value"))
+        artist = _gap_strip((md.get("Artist") or {}).get("value"))
+        base = re.sub(r"\.\w+$", "", name.split(":", 1)[-1])
+        if not title:   # "Artist - Title - Google Art Project.jpg"
+            parts = [x.strip() for x in re.sub(r"\s*-\s*Google Art Project.*$", "", base).split(" - ")]
+            title = parts[1] if len(parts) > 1 else parts[0]
+            artist = artist or (parts[0] if len(parts) > 1 else "")
+        artist = re.sub(r"\s*\(.*?\)\s*", " ", artist).strip() or "Anonymous"
+        if re.search(r"unknown|anonym", artist, re.I):
+            artist = "Anonymous"
+        if GAP_NOT_ART.search(title + " " + base):
+            continue
+        yield {"src": "gap", "id": str(p.get("pageid")), "artist": artist[:120], "title": title[:250],
+               "date": _gap_strip((md.get("DateTimeOriginal") or {}).get("value"))[:40], "kind": "painting",
+               "w": int(ii.get("width") or 0), "h": int(ii.get("height") or 0), "url": ii.get("url"),
+               "page": ii.get("descriptionurl"), "license": "Public domain (Google Art Project via Wikimedia Commons)"}
+
+
+def src_gap():
+    seen = set()
+    cats = [GAP_ROOTS[0]] + list(_gap_members(GAP_ROOTS[1], "subcat"))
+    log("Google Art Project: %d categories" % len(cats))
+    for cat in cats:
+        n, batch = 0, []
+        for t in _gap_members(cat, "file"):
+            if t in seen:
+                continue
+            seen.add(t)
+            batch.append(t)
+            if len(batch) == 50:
+                for it in _gap_files(batch):
+                    n += 1
+                    yield it
+                batch = []
+                time.sleep(0.3)
+        for it in (_gap_files(batch) if batch else []):
+            n += 1
+            yield it
+        log("Google Art Project %s: %d listed" % (cat.split(":", 1)[-1][:60], n))
+
+
 IIIF_TILE = 3800
 
 
@@ -905,7 +989,8 @@ def iiif_image(base, w=0, h=0):
 
 
 SRC = {"nga": src_nga, "met": src_met, "cleveland": src_cleveland, "aic": src_aic, "rijks": src_rijks, "smk": src_smk,
-       "fng": src_fng, "ycba": src_ycba, "wellcome": src_wellcome, "si": src_si, "europeana": src_europeana}  # fng/ycba/wellcome added 18 Nov 2026
+       "fng": src_fng, "ycba": src_ycba, "wellcome": src_wellcome, "si": src_si, "europeana": src_europeana,
+       "gap": src_gap}  # gap = Google Art Project on Commons, 20 Nov 2026  # fng/ycba/wellcome added 18 Nov 2026
 
 
 # ----------------------------------------------------------------- main --
