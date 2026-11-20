@@ -1,50 +1,22 @@
-"""Probe 2 (20 Nov 2026): Getty SPARQL + Library of Congress item detail."""
-import requests, json, time
+"""Probe 3 (20 Nov 2026): Getty painting object JSON + counts by type."""
+import requests, json
 S = requests.Session(); S.headers["User-Agent"] = "NeverlandMuseumIntake/1.0 (open-access download; contact via GitHub msfits20)"
-def show(r, n=400):
-    print("  ", r.status_code, r.headers.get("Content-Type"), r.text[:n].replace("\n", " "))
-print("== Getty SPARQL")
-q = """PREFIX crm: <http://www.cidoc-crm.org/cidoc-crm/>
-PREFIX la: <https://linked.art/ns/terms/>
-SELECT ?obj ?type WHERE { ?obj a crm:E22_Human-Made_Object ; crm:P2_has_type ?type . } LIMIT 3"""
-try:
-    r = S.get("https://data.getty.edu/museum/collection/sparql", params={"query": q}, headers={"Accept": "application/sparql-results+json"}, timeout=90); show(r)
-except Exception as e: print("  ERR", e)
-print("== Getty object sample via activity stream page 1")
-try:
-    r = S.get("https://data.getty.edu/museum/collection/activity-stream/page/1", timeout=60); j = r.json()
-    its = j.get("orderedItems") or []
-    print("  items", len(its), its[0]["object"]["id"] if its else None)
-    for it in its[:30]:
-        o = it.get("object", {})
-        if o.get("type") == "HumanMadeObject":
-            r2 = S.get(o["id"], timeout=60); jo = r2.json()
-            print("  obj", jo.get("_label"), [c.get("_label") for c in jo.get("classified_as", [])][:4])
-            print("   rep", json.dumps(jo.get("representation", [])[:1])[:300])
-            print("   subj_to", json.dumps(jo.get("subject_of", [])[:2])[:300])
-            break
-except Exception as e: print("  ERR", e)
-print("== Getty last page (newest) + totals")
-try:
-    r = S.get("https://data.getty.edu/museum/collection/activity-stream", timeout=60); j = r.json(); print("  last", j.get("last"))
-except Exception as e: print("  ERR", e)
-print("== LoC collection page + item")
-for slug in ["works-progress-administration-posters", "japanese-fine-prints-pre-1915", "posters-world-war-i-posters"]:
+EP = "https://data.getty.edu/museum/collection/sparql"
+def sparql(q):
+    r = S.get(EP, params={"query": q}, headers={"Accept": "application/sparql-results+json"}, timeout=180)
+    return r.json()["results"]["bindings"]
+P = "PREFIX crm: <http://www.cidoc-crm.org/cidoc-crm/> PREFIX aat: <http://vocab.getty.edu/aat/> "
+for name, t in [("painting", "300033618"), ("drawing", "300033973"), ("print", "300041273"), ("watercolor", "300078925")]:
     try:
-        r = S.get("https://www.loc.gov/collections/%s/?fo=json&c=2" % slug, timeout=60)
-        if r.status_code != 200: print("  ", slug, r.status_code); time.sleep(5); continue
-        j = r.json(); print("  ", slug, "total", j.get("pagination", {}).get("of"))
-        it = j["results"][0]; print("   ", it.get("id"), it.get("title")[:60], (it.get("image_url") or [])[-1:])
-        time.sleep(4)
-        r2 = S.get(it["id"] + "?fo=json", timeout=60); ji = r2.json().get("item", {})
-        print("    rights:", str(ji.get("rights_advisory") or ji.get("rights"))[:150])
-        res = r2.json().get("resources") or []
-        if res:
-            fl = res[0].get("files") or []
-            big = [f for grp in fl for f in grp if f.get("mimetype") == "image/jpeg"]
-            big.sort(key=lambda f: (f.get("width") or 0) * (f.get("height") or 0))
-            print("    largest jpeg:", big[-1] if big else None)
-            ti = [f for grp in fl for f in grp if "iiif" in str(f.get("url",""))][:1]
-            print("    iiif:", ti)
-        time.sleep(4)
-    except Exception as e: print("  ERR", slug, e)
+        b = sparql(P + "SELECT (COUNT(DISTINCT ?o) AS ?n) WHERE { ?o a crm:E22_Human-Made_Object ; crm:P2_has_type aat:%s . }" % t)
+        print(name, b[0]["n"]["value"])
+    except Exception as e: print(name, "ERR", e)
+b = sparql(P + "SELECT ?o WHERE { ?o a crm:E22_Human-Made_Object ; crm:P2_has_type aat:300033618 . } LIMIT 1")
+u = b[0]["o"]["value"]; print("obj", u)
+j = S.get(u, headers={"Accept": "application/ld+json"}, timeout=60).json()
+def trim(x, d=0):
+    if d > 4: return "…"
+    if isinstance(x, dict): return {k: trim(v, d + 1) for k, v in x.items() if k in ("id","type","_label","content","classified_as","representation","digitally_shown_by","access_point","subject_to","conforms_to","format","produced_by","carried_out_by","timespan","identified_by","referred_to_by")}
+    if isinstance(x, list): return [trim(v, d + 1) for v in x[:3]]
+    return x
+print(json.dumps(trim(j), indent=1)[:6000])
