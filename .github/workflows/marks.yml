@@ -1,0 +1,39 @@
+name: Watermark recheck (Met/NGA, read-only)
+on:
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: "Sources to recheck"
+        default: "met,nga"
+permissions:
+  contents: read
+jobs:
+  marks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -q open_clip_torch numpy pillow imagehash requests opencv-python-headless
+      - env:
+          GOOGLE_AUTH: ${{ secrets.GOOGLE_AUTH }}
+          NEVERLAND_READ: ${{ secrets.NEVERLAND_READ }}
+          SOURCES: ${{ github.event.inputs.sources || 'met,nga' }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: "3"
+          RUN_MINUTES: "320"
+        run: python marks_recheck.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: marks-${{ matrix.shard }}
+          path: calibration/
+          if-no-files-found: ignore
