@@ -27,13 +27,15 @@ log = intake.log
 
 def main():
     d = intake.Drive()
-    todo, after = [], ""
-    while True:
-        rows = catalog_mod._rpc(CFG, "intake_marks_todo", p_sources=SOURCES, p_after=after, p_limit=5000)
-        if not rows:
-            break
-        todo += rows
-        after = rows[-1]["drive_file_id"]
+    todo = []
+    for src in SOURCES:   # one source at a time: the list is paged by file id within a source
+        after = ""
+        while True:
+            rows = catalog_mod._rpc(CFG, "intake_marks_todo", p_sources=[src], p_after=after, p_limit=5000)
+            if not rows:
+                break
+            todo += rows
+            after = rows[-1]["drive_file_id"]
     mine = [r for r in todo if int(hashlib.md5(r["drive_file_id"].encode()).hexdigest(), 16) % SHARDS == SHARD]
     log("to score: %d (shard %d/%d of %d)" % (len(mine), SHARD, SHARDS, len(todo)))
     frames = review.FrameModel()
