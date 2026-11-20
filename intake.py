@@ -1066,13 +1066,43 @@ SRC = {"nga": src_nga, "met": src_met, "cleveland": src_cleveland, "aic": src_ai
 
 
 # ----------------------------------------------------------------- main --
+# 20 Nov 2026: upload.wikimedia.org answered 429 to 5,964 of ~6,000 'gap' downloads
+# (8 workers, no pacing, no retry). Space requests per host and honour Retry-After.
+_HOST_GAP = {"upload.wikimedia.org": float(os.environ.get("WIKI_GAP", "1.0"))}
+_host_lock, _host_next = threading.Lock(), {}
+
+
+def _paced_get(url):
+    host = re.sub(r"^https?://([^/]+).*", r"\1", url)
+    gap = _HOST_GAP.get(host, 0)
+    r = None
+    for i in range(6):
+        if gap:
+            with _host_lock:
+                wait = _host_next.get(host, 0) - time.time()
+                _host_next[host] = max(time.time(), _host_next.get(host, 0)) + gap
+            if wait > 0:
+                time.sleep(wait)
+        r = S.get(url, timeout=600)
+        if r.status_code not in (429, 503):
+            return r
+        ra = r.headers.get("Retry-After", "")
+        pause = float(ra) if ra.isdigit() else min(120, 10 * 2 ** i)
+        if gap:
+            with _host_lock:   # slow every worker down, not just this one
+                _HOST_GAP[host] = min(10.0, _HOST_GAP[host] * 1.5)
+                _host_next[host] = time.time() + pause
+        time.sleep(pause + random.random() * 3)
+    return r
+
+
 def fetch_image(it):
     """Returns (image, original jpeg bytes or None)."""
     if it.get("iiif"):
         known_wh = it["src"] in ("nga", "ycba")   # sizes from the museum's own record
         return iiif_image(it["iiif"], it.get("w") if known_wh else 0,
                           it.get("h") if known_wh else 0), None
-    r = S.get(it["url"], timeout=600)
+    r = _paced_get(it["url"])
     if r.status_code != 200:
         raise RuntimeError("HTTP %s" % r.status_code)
     im = Image.open(io.BytesIO(r.content))
