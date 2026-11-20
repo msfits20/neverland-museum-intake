@@ -1,22 +1,50 @@
-"""Probe 3 (20 Nov 2026): Getty painting object JSON + counts by type."""
-import requests, json
-S = requests.Session(); S.headers["User-Agent"] = "NeverlandMuseumIntake/1.0 (open-access download; contact via GitHub msfits20)"
-EP = "https://data.getty.edu/museum/collection/sparql"
-def sparql(q):
-    r = S.get(EP, params={"query": q}, headers={"Accept": "application/sparql-results+json"}, timeout=180)
-    return r.json()["results"]["bindings"]
-P = "PREFIX crm: <http://www.cidoc-crm.org/cidoc-crm/> PREFIX aat: <http://vocab.getty.edu/aat/> "
-for name, t in [("painting", "300033618"), ("drawing", "300033973"), ("print", "300041273"), ("watercolor", "300078925")]:
+"""Probe 4 (20 Nov 2026): rarer, famous sources. Read-only.
+- Wikimedia Commons "Google Art Project" categories (gigapixel copies of paintings from museums that
+  aren't open access: Uffizi, Hermitage, Prado-era loans, Tate, Van Gogh Museum...)
+- Nationalmuseum Sweden, Princeton, Yale University Art Gallery open APIs."""
+import json
+import requests
+
+S = requests.Session()
+S.headers["User-Agent"] = "NeverlandMuseumIntake/1.0 (open-access download; contact via GitHub msfits20)"
+API = "https://commons.wikimedia.org/w/api.php"
+
+
+def cat_info(name):
+    j = S.get(API, params={"action": "query", "format": "json", "prop": "categoryinfo", "titles": "Category:" + name}, timeout=60).json()
+    for p in j["query"]["pages"].values():
+        return p.get("categoryinfo")
+
+
+for c in ["Google Art Project", "Google Art Project paintings", "Google Art Project works by collection",
+          "Paintings in the Google Art Project", "Google Art Project works", "Featured pictures of paintings",
+          "Quality images of paintings", "Gigapixel images"]:
     try:
-        b = sparql(P + "SELECT (COUNT(DISTINCT ?o) AS ?n) WHERE { ?o a crm:E22_Human-Made_Object ; crm:P2_has_type aat:%s . }" % t)
-        print(name, b[0]["n"]["value"])
-    except Exception as e: print(name, "ERR", e)
-b = sparql(P + "SELECT ?o WHERE { ?o a crm:E22_Human-Made_Object ; crm:P2_has_type aat:300033618 . } LIMIT 1")
-u = b[0]["o"]["value"]; print("obj", u)
-j = S.get(u, headers={"Accept": "application/ld+json"}, timeout=60).json()
-def trim(x, d=0):
-    if d > 4: return "…"
-    if isinstance(x, dict): return {k: trim(v, d + 1) for k, v in x.items() if k in ("id","type","_label","content","classified_as","representation","digitally_shown_by","access_point","subject_to","conforms_to","format","produced_by","carried_out_by","timespan","identified_by","referred_to_by")}
-    if isinstance(x, list): return [trim(v, d + 1) for v in x[:3]]
-    return x
-print(json.dumps(trim(j), indent=1)[:6000])
+        print("CAT", c, cat_info(c))
+    except Exception as e:
+        print("CAT", c, "ERR", e)
+
+# a few sample files from the biggest one, with size and licence
+j = S.get(API, params={"action": "query", "format": "json", "generator": "categorymembers",
+                       "gcmtitle": "Category:Google Art Project works by collection", "gcmlimit": 20, "gcmtype": "subcat"}, timeout=60).json()
+subs = [p["title"] for p in (j.get("query") or {}).get("pages", {}).values()]
+print("SUBCATS sample", len(subs), subs[:20])
+if subs:
+    j = S.get(API, params={"action": "query", "format": "json", "generator": "categorymembers", "gcmtitle": subs[0],
+                           "gcmlimit": 5, "gcmtype": "file", "prop": "imageinfo", "iiprop": "size|mime|extmetadata"}, timeout=60).json()
+    for p in (j.get("query") or {}).get("pages", {}).values():
+        ii = p["imageinfo"][0]
+        md = ii.get("extmetadata", {})
+        print(" ", p["title"][:80], ii["width"], ii["height"], ii["mime"], (md.get("LicenseShortName") or {}).get("value"),
+              ((md.get("Artist") or {}).get("value") or "")[:60])
+
+for name, url, params in [
+    ("nationalmuseum", "https://api.nationalmuseum.se/api/objects", {"limit": 1}),
+    ("princeton", "https://data.artmuseum.princeton.edu/search/objects", {"q": "painting", "size": 1}),
+    ("yuag-lux", "https://lux.collections.yale.edu/api/search/item", {"q": json.dumps({"text": "painting"}), "page": 1, "pageLength": 1}),
+]:
+    try:
+        r = S.get(url, params=params, timeout=60)
+        print(name, r.status_code, r.headers.get("content-type"), r.text[:400].replace("\n", " "))
+    except Exception as e:
+        print(name, "ERR", e)
