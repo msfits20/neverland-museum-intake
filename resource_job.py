@@ -567,6 +567,8 @@ class Job:
         todo = [t for t in targets if self.due(t)][:TARGETS]
         log("unfit copies without a better one: %d %s | this run: %d" % (len(targets), by, len(todo)))
         for k, t in enumerate(todo):
+            if k % 10 == 0 and not DRY:
+                catalog_mod.wait_for_store(CFG, log)  # shoppers first (20 Nov 2026)
             if intake.STOP.is_set() or time.time() - T0 > RUN_SECONDS:
                 log("Time is up - the next run carries on")
                 break

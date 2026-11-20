@@ -367,6 +367,7 @@ def main():
             # small batches + long patience: each insert stays under the API's 3 s limit even
             # when the database is busy (20 Nov 2026: review died on "database unreachable")
             for k in range(0, len(batch), 50):
+                catalog_mod.wait_for_store(CFG, log)
                 catalog_mod._rpc(CFG, "intake_submit", _tries=12, p_kind="candidate", p_rows=batch[k:k + 50])
 
     def work(f):

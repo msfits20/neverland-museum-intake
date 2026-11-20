@@ -138,6 +138,26 @@ def _rpc(cfg, fn, _tries=6, **args):
     raise RuntimeError("database unreachable (%s)" % fn)
 
 
+def wait_for_store(cfg, log=print, max_wait=3 * 3600):
+    """20 Nov 2026: shoppers first. While the launch watchdog reports the storefront catalog as
+    slow/failing (sync_state.launch_health.catalog_ok = false), background jobs pause here."""
+    t0, said = time.time(), False
+    while time.time() - t0 < max_wait:
+        try:
+            r = requests.post(cfg["db_url"] + "/rest/v1/rpc/intake_launch_ok", json={"p_token": cfg["db_token"]},
+                              headers={"apikey": cfg["db_key"], "Content-Type": "application/json"}, timeout=30)
+            if r.status_code == 200 and r.json() is not False:
+                if said:
+                    log("store catalog healthy again; carrying on")
+                return
+        except requests.RequestException:
+            pass
+        if not said:
+            log("store catalog is struggling; pausing database writes so shoppers come first")
+            said = True
+        time.sleep(120)
+
+
 def rpc_offset_all(cfg, fn, page=1000, **args):
     """Every row of a set-returning RPC. The API returns at most 1,000 rows per request,
     so page with offset (the function must return rows in a fixed order)."""
