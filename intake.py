@@ -22,6 +22,7 @@ import csv
 import gzip
 import hashlib
 import html
+import urllib.parse
 import io
 import json
 import os
@@ -957,6 +958,69 @@ def src_gap():
         log("Google Art Project %s: %d listed" % (cat.split(":", 1)[-1][:60], n))
 
 
+# ------------------------------------------------------------------ Artvee --
+# 20 Nov 2026 (Tobi bought Artvee Pro): Tobi's logged-in Chrome looks up each artwork's signed "Max size" link
+# (valid 24 h, no login needed to fetch) and stores it in Supabase artvee_queue; this part downloads those links.
+# Artvee answers 403 to cloud servers on artvee.com itself, so only the signing happens in the browser.
+ARTVEE_SEED = "artvee_queue_seed.txt.gz"
+
+
+def _artvee_cfg():
+    return json.loads(os.environ["NEVERLAND_READ"])
+
+
+def artvee_seed():
+    """Load the discovery list into artvee_queue (idempotent; existing slugs are kept)."""
+    import catalog as catalog_mod
+    if not os.path.exists(ARTVEE_SEED):
+        return 0
+    cfg, rows, n = _artvee_cfg(), [], 0
+    with gzip.open(ARTVEE_SEED, "rt") as f:
+        for line in f:
+            u = line.strip()
+            m = re.search(r"/dl/([^/]+)/?$", u)
+            if m:
+                rows.append({"slug": m.group(1), "url": u, "via": "discovery 13 Nov"})
+            if len(rows) == 1000:
+                n += catalog_mod._rpc(cfg, "artvee_add", p_rows=rows) or 0
+                rows = []
+    if rows:
+        n += catalog_mod._rpc(cfg, "artvee_add", p_rows=rows) or 0
+    log("Artvee: %d new links added to the queue" % n)
+    return n
+
+
+def src_artvee():
+    import catalog as catalog_mod
+    cfg = _artvee_cfg()
+    if SHARD_I == 0:
+        try:
+            artvee_seed()
+        except Exception as ex:
+            log("Artvee seed failed:", str(ex)[:120])
+    idle, prev = 0, []
+    while not STOP.is_set():
+        if prev:
+            catalog_mod._rpc(cfg, "artvee_done", p_slugs=prev)
+        rows = catalog_mod._rpc(cfg, "artvee_take", p_limit=150, p_shard=SHARD_I, p_shards=SHARD_N) or []
+        prev = [r["slug"] for r in rows]
+        if not rows:
+            idle += 1
+            if idle > 30:          # 30 min with nothing signed: the browser isn't running; stop for now
+                log("Artvee: no signed links for 30 min - stopping (the browser signer may be off)")
+                return
+            time.sleep(60)
+            continue
+        idle = 0
+        for r in rows:
+            title = (r.get("title") or urllib.parse.unquote(r["slug"]).replace("-", " ")).strip()
+            m = re.search(r"\((\d{3,4}(?:[-–]\d{2,4})?)\)\s*$", title)
+            yield {"src": "artvee", "id": r["slug"][:180], "artist": (r.get("artist") or "Anonymous").strip(),
+                   "title": re.sub(r"\s*\(\d{3,4}(?:[-–]\d{2,4})?\)\s*$", "", title), "date": m.group(1) if m else "",
+                   "kind": "artwork", "w": int(r.get("w") or 0), "h": int(r.get("h") or 0),
+                   "url": r["signed_url"], "page": r["url"], "license": "Public domain (Artvee)"}
+
+
 IIIF_TILE = 3800
 
 
@@ -998,7 +1062,7 @@ def iiif_image(base, w=0, h=0):
 
 SRC = {"nga": src_nga, "met": src_met, "cleveland": src_cleveland, "aic": src_aic, "rijks": src_rijks, "smk": src_smk,
        "fng": src_fng, "ycba": src_ycba, "wellcome": src_wellcome, "si": src_si, "europeana": src_europeana,
-       "gap": src_gap}  # gap = Google Art Project on Commons, 20 Nov 2026  # fng/ycba/wellcome added 18 Nov 2026
+       "gap": src_gap, "artvee": src_artvee}  # gap = Google Art Project on Commons, 20 Nov 2026  # fng/ycba/wellcome added 18 Nov 2026
 
 
 # ----------------------------------------------------------------- main --
