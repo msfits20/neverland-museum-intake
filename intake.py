@@ -908,20 +908,28 @@ def _gap_files(titles):
         if not GAP_PD.match(lic):
             continue
         name = p.get("title", "")
-        title = _gap_strip((md.get("ObjectName") or {}).get("value"))
-        artist = _gap_strip((md.get("Artist") or {}).get("value"))
         base = re.sub(r"\.\w+$", "", name.split(":", 1)[-1])
-        if not title:   # "Artist - Title - Google Art Project.jpg"
-            parts = [x.strip() for x in re.sub(r"\s*-\s*Google Art Project.*$", "", base).split(" - ")]
-            title = parts[1] if len(parts) > 1 else parts[0]
-            artist = artist or (parts[0] if len(parts) > 1 else "")
-        artist = re.sub(r"\s*\(.*?\)\s*", " ", artist).strip() or "Anonymous"
+        # Commons metadata carries Wikidata junk ("title QS:P1476,en:...", "Details on Google Art Project");
+        # the file name "Artist - Title - Google Art Project" is usually the cleanest source of both
+        parts = [x.strip() for x in re.sub(r"\s*[-–(]+\s*Google Art Project.*$", "", base).split(" - ")]
+        meta_title = re.split(r"\s+(?:title|label) QS:", _gap_strip((md.get("ObjectName") or {}).get("value")))[0].strip()
+        meta_artist = re.split(r"\s+(?:Details on Google Art Project|[-–]\s+(?:artist|painter)|Born in|Active c\.)",
+                               _gap_strip((md.get("Artist") or {}).get("value")), flags=re.I)[0].strip(" –-")
+        if len(parts) >= 2:
+            artist, title = parts[0], " - ".join(parts[1:])
+        else:
+            artist, title = meta_artist, meta_title or parts[0]
+        if "," in artist and len(artist.split(",")) == 2:          # "Dyck, Anthony van" -> "Anthony van Dyck"
+            last, first = [x.strip() for x in artist.split(",")]
+            artist = (first + " " + last).strip()
+        artist = re.sub(r"^(attributed to|formerly attributed to)\s+", "", artist, flags=re.I)   # workshop/circle/after are kept: not the master's own work
+        artist = re.sub(r"\s*\(.*?\)\s*", " ", artist).strip() or meta_artist or "Anonymous"
         if re.search(r"unknown|anonym", artist, re.I):
             artist = "Anonymous"
         if GAP_NOT_ART.search(title + " " + base):
             continue
         yield {"src": "gap", "id": str(p.get("pageid")), "artist": artist[:120], "title": title[:250],
-               "date": _gap_strip((md.get("DateTimeOriginal") or {}).get("value"))[:40], "kind": "painting",
+               "date": re.split(r"\s+date QS:", _gap_strip((md.get("DateTimeOriginal") or {}).get("value")))[0][:40], "kind": "painting",
                "w": int(ii.get("width") or 0), "h": int(ii.get("height") or 0), "url": ii.get("url"),
                "page": ii.get("descriptionurl"), "license": "Public domain (Google Art Project via Wikimedia Commons)"}
 
