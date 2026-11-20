@@ -42,6 +42,27 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -q pillow imagehash requests numpy opencv-python-headless
+      # 20 Nov 2026: one catalog fingerprint list per hour, shared through the GitHub cache, instead of every
+      # part downloading ~600K rows from the busy database when it starts (catalog.py index_rows)
+      - run: echo "HOUR=$(date -u +%Y%m%d%H)" >> "$GITHUB_ENV"
+      - id: idx
+        uses: actions/cache/restore@v4
+        with:
+          path: catalog_index.json.gz
+          key: catalog-index-${{ env.HOUR }}
+          restore-keys: catalog-index-
+      - name: Refresh the shared catalog list (once an hour)
+        if: steps.idx.outputs.cache-hit != 'true'
+        continue-on-error: true
+        env:
+          NEVERLAND_READ: ${{ secrets.NEVERLAND_READ }}
+        run: python -c "import catalog; catalog.dump_index()"
+      - if: steps.idx.outputs.cache-hit != 'true' && hashFiles('catalog_index.json.gz') != ''
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: catalog_index.json.gz
+          key: catalog-index-${{ env.HOUR }}
       - name: Download museum art into Google Drive
         env:
           GOOGLE_AUTH: ${{ secrets.GOOGLE_AUTH }}

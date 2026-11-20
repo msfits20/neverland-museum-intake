@@ -164,6 +164,38 @@ def rpc_offset_all(cfg, fn, page=1000, **args):
         off += page
 
 
+INDEX_FILE = os.environ.get("CATALOG_INDEX_FILE", "catalog_index.json.gz")
+
+
+def index_rows(cfg):
+    """The catalog fingerprint list. 20 Nov 2026: every museum part used to download the whole list
+    (~600K rows, 120+ calls) from the database when it started; with a dozen parts starting at once that
+    overloaded the database during the bulk launch. The workflow now shares one copy per hour through the
+    GitHub cache (CATALOG_INDEX_FILE); without the file this falls back to the database as before."""
+    import gzip
+    if INDEX_FILE and os.path.exists(INDEX_FILE):
+        try:
+            with gzip.open(INDEX_FILE, "rt") as f:
+                rows = json.load(f)
+            if rows:
+                return rows
+        except Exception:
+            pass
+    return rpc_all(cfg, "intake_catalog_index")
+
+
+def dump_index(path=None):
+    """Write the catalog fingerprint list to a file (run once per workflow run, before the parts)."""
+    import gzip
+    cfg = json.loads(os.environ["NEVERLAND_READ"])
+    rows = rpc_all(cfg, "intake_catalog_index")
+    path = path or INDEX_FILE
+    with gzip.open(path + ".tmp", "wt") as f:
+        json.dump(rows, f)
+    os.replace(path + ".tmp", path)   # an older copy from the cache stays usable if this run fails
+    print("catalog index: %d rows" % len(rows))
+
+
 def rpc_all(cfg, fn):
     out, after = [], ""
     while True:
@@ -197,7 +229,7 @@ def hex64(h):
 class Catalog:
     def __init__(self, cfg, surname, keys, norm=None):
         self.prev = Previews(cfg)
-        rows = [r for r in rpc_all(cfg, "intake_catalog_index") if r.get("phash")]
+        rows = [r for r in index_rows(cfg) if r.get("phash")]
         self.rows = rows
         self.h = np.array([int(r["phash"], 16) for r in rows], dtype=np.uint64)
         self.sur = [surname((r.get("path") or "").split("/")[0]) for r in rows]
