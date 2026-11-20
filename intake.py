@@ -923,7 +923,7 @@ def _gap_files(titles):
             last, first = [x.strip() for x in artist.split(",")]
             artist = (first + " " + last).strip()
         artist = re.sub(r"^(attributed to|formerly attributed to)\s+", "", artist, flags=re.I)   # workshop/circle/after are kept: not the master's own work
-        artist = re.sub(r"\s*\(.*?\)\s*", " ", artist).strip() or meta_artist or "Anonymous"
+        artist = re.sub(r"\s*\(.*?(\)|$)\s*", " ", artist).strip() or meta_artist or "Anonymous"
         if re.search(r"unknown|anonym", artist, re.I):
             artist = "Anonymous"
         if GAP_NOT_ART.search(title + " " + base):
