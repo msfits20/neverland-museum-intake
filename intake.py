@@ -806,6 +806,65 @@ def src_si():
                     break
 
 
+# ------------------------------------------------------------- Europeana --
+# 20 Nov 2026 (Tobi: "expand the museum thing"). Europeana aggregates thousands of European museums.
+# Public domain / CC0 only, images over ~4 MP (IMAGE_SIZE:extra_large), wall-art types, no photographs.
+# Museums we already harvest directly are skipped here (their copies come in through their own part).
+# Key: intake_config 'europeana_key' when set, else Europeana's public demo key.
+EUROPEANA_TERMS = [x for x in os.environ.get("EUROPEANA_TERMS",
+    "painting,drawing,watercolour,print,etching,engraving,lithograph,woodcut,poster,pastel,gouache,miniature").split(",") if x]
+EUROPEANA_SKIP = re.compile(r"rijksmuseum|statens museum|smk|kansallisgalleria|finnish national gallery|ateneum|wellcome|"
+                            r"smithsonian|yale|metropolitan museum|cleveland|national gallery of art", re.I)
+def _config(key):
+    raw = os.environ.get("NEVERLAND_READ")
+    if not raw:
+        return None
+    c = json.loads(raw)
+    try:
+        r = requests.post(c["db_url"] + "/rest/v1/rpc/intake_get_config", json={"p_token": c["db_token"], "p_key": key},
+                          headers={"apikey": c["db_key"], "Content-Type": "application/json"}, timeout=60)
+        return r.json() if r.status_code == 200 else None
+    except (requests.RequestException, ValueError):
+        return None
+def _first(x):
+    if isinstance(x, list):
+        return str(x[0]) if x else ""
+    return str(x or "")
+def src_europeana():
+    key = _config("europeana_key") or "api2demo"
+    seen = set()
+    for term in EUROPEANA_TERMS:
+        cursor, n = "*", 0
+        while cursor and not STOP.is_set():
+            j = get_json("https://api.europeana.eu/record/v2/search.json", params={
+                "wskey": key, "query": 'what:"%s" NOT what:(photograph OR photography OR foto OR fotografie)' % term,
+                "qf": ["TYPE:IMAGE", "IMAGE_SIZE:extra_large", "RIGHTS:*publicdomain*"],
+                "rows": 100, "profile": "rich", "cursor": cursor})
+            if not j or not j.get("success", True):
+                break
+            for r in j.get("items") or []:
+                rid = str(r.get("id") or "")
+                url = _first(r.get("edmIsShownBy"))
+                prov = _first(r.get("dataProvider"))
+                if not rid or not url or rid in seen or EUROPEANA_SKIP.search(prov):
+                    continue
+                seen.add(rid)
+                rights = _first(r.get("rights"))
+                if "publicdomain" not in rights:
+                    continue
+                artist = re.sub(r"\s*\(.*?\)\s*$", "", _first(r.get("dcCreator"))).strip()
+                if artist.startswith("http") or not artist:
+                    artist = "Anonymous"
+                yield {"src": "europeana", "id": rid.strip("/").replace("/", "_"), "artist": artist,
+                       "title": _first(r.get("title")), "date": _first(r.get("year")), "kind": term,
+                       "w": 0, "h": 0, "url": url, "page": _first(r.get("guid")) or _first(r.get("edmIsShownAt")),
+                       "license": "%s (%s via Europeana)" % ("CC0" if "zero" in rights else "Public domain", prov or "Europeana")}
+                n += 1
+            cursor = j.get("nextCursor")
+            time.sleep(0.2)
+        log("Europeana %s: %d listed" % (term, n))
+
+
 IIIF_TILE = 3800
 
 
@@ -846,7 +905,7 @@ def iiif_image(base, w=0, h=0):
 
 
 SRC = {"nga": src_nga, "met": src_met, "cleveland": src_cleveland, "aic": src_aic, "rijks": src_rijks, "smk": src_smk,
-       "fng": src_fng, "ycba": src_ycba, "wellcome": src_wellcome, "si": src_si}  # fng/ycba/wellcome added 18 Nov 2026
+       "fng": src_fng, "ycba": src_ycba, "wellcome": src_wellcome, "si": src_si, "europeana": src_europeana}  # fng/ycba/wellcome added 18 Nov 2026
 
 
 # ----------------------------------------------------------------- main --
