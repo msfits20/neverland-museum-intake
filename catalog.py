@@ -122,9 +122,11 @@ def confirmed(prev, new_small, other_id):
     return {"inliers": inl, "ratio": ratio, "ok": details_ok(inl, ratio)}
 
 
-def _rpc(cfg, fn, **args):
+def _rpc(cfg, fn, _tries=6, **args):
+    """_tries: 6 waits ~1 min in all; 12 waits up to ~15 min (each wait capped at 2 min)
+    for when the database is busy (e.g. during the bulk launch, 20 Nov 2026)."""
     args["p_token"] = cfg["db_token"]
-    for i in range(6):
+    for i in range(_tries):
         try:
             r = requests.post(cfg["db_url"] + "/rest/v1/rpc/" + fn, json=args, timeout=120,
                               headers={"apikey": cfg["db_key"], "Content-Type": "application/json"})
@@ -132,7 +134,7 @@ def _rpc(cfg, fn, **args):
                 return r.json()
         except requests.RequestException:
             pass
-        time.sleep(2 ** i)
+        time.sleep(min(2 ** i, 120))
     raise RuntimeError("database unreachable (%s)" % fn)
 
 
