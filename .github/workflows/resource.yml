@@ -47,6 +47,7 @@ jobs:
         continue-on-error: true
         env:
           MODE: wanted
+          WANTED_PER_RUN: "300"   # 20 Nov 2026: famous gaps now carry the exact Commons file, so most are quick
           GOOGLE_AUTH: ${{ secrets.GOOGLE_AUTH }}
           NEVERLAND_READ: ${{ secrets.NEVERLAND_READ }}
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}

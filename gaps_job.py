@@ -38,12 +38,12 @@ import resource_job as R
 
 CFG = json.loads(os.environ["NEVERLAND_READ"])
 DRY = os.environ.get("DRY_RUN") == "1"
-MIN_LINKS = int(os.environ.get("MIN_LINKS", "15"))
+MIN_LINKS = int(os.environ.get("MIN_LINKS", "10"))   # 20 Nov: 15 -> 10 (Tobi: "source the harder, rarer ones, especially popular rare")
 ARTIST_MIN_LINKS = int(os.environ.get("ARTIST_MIN_LINKS", "6"))
 TOP_ARTISTS = int(os.environ.get("TOP_ARTISTS", "150"))
 PD_DEATH_YEAR = int(os.environ.get("PD_DEATH_YEAR", str(time.gmtime().tm_year - 71)))   # 70 years after death
 PD_MADE_BEFORE = int(os.environ.get("PD_MADE_BEFORE", "1930"))                          # US: before 1930
-MAX_NEW = int(os.environ.get("MAX_NEW", "400"))
+MAX_NEW = int(os.environ.get("MAX_NEW", "3000"))
 SPARQL = "https://query.wikidata.org/sparql"
 UA = "NeverlandPrintsBot/1.0 (https://neverlandprints.com; hello@neverlandprints.com)"
 TYPES = {"painting": "Q3305213", "print": "Q11060274", "drawing": "Q93184", "fresco": "Q134194"}
@@ -261,6 +261,39 @@ def artist_namer():
 
 
 # ------------------------------------------------------------------------------------------------------ run --
+def commons_images(qids):
+    """Wikidata's own picture of each work (P18, a Wikimedia Commons file), 20 Nov 2026: the re-source job
+    fetches that exact file (search_hint "Wikimedia Commons: <file>") instead of fuzzy-searching museums,
+    which found 1 of the first ~420 famous gaps (Las Meninas, Impression Sunrise... aren't in open-access museums)."""
+    out = {}
+    ids = [q for q in qids if q]
+    for i in range(0, len(ids), 200):
+        values = " ".join("wd:" + q for q in ids[i:i + 200])
+        try:
+            rows = sparql("SELECT ?item ?image WHERE { VALUES ?item { %s } ?item wdt:P18 ?image. }" % values)
+        except Exception as ex:
+            log("  P18 lookup failed: %s" % str(ex)[:120])
+            continue
+        for r in rows:
+            q = qid(r["item"]["value"])
+            f = requests.utils.unquote(r["image"]["value"].rsplit("/", 1)[-1]).replace("_", " ")
+            out.setdefault(q, f)   # first picture Wikidata lists
+        time.sleep(1.5)
+    return out
+
+
+def add_hints():
+    """Give every open wanted work (new or older) its Commons file as the search hint."""
+    rows = catalog_mod.rpc_offset_all(CFG, "intake_wanted_open")
+    imgs = commons_images([r.get("qid") for r in rows])
+    hints = [{"qid": q, "hint": "Wikimedia Commons: %s" % f} for q, f in imgs.items()]
+    n = 0
+    if hints and not DRY:
+        for i in range(0, len(hints), 200):
+            n += catalog_mod._rpc(CFG, "intake_wanted_hint", p_rows=hints[i:i + 200]) or 0
+    log("Commons pictures found for %d of %d open wanted works; %d hints set" % (len(imgs), len(rows), n))
+
+
 def main():
     if os.environ.get("PAUSED") == "1":
         log("Paused (repository variable PAUSED=1).")
@@ -323,6 +356,7 @@ def main():
     msg = "GAPS DONE: %d new on the wanted list, %d of them already in the intake folder (listed next hour)" % (len(added), linked)
     log(msg)
     summary.insert(1, msg)
+    add_hints()
     with open(os.environ.get("GITHUB_STEP_SUMMARY", "/dev/null"), "a") as fh:
         fh.write("\n".join(summary) + "\n")
 
