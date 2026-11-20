@@ -1,35 +1,64 @@
-import json, os, re, requests
-UA = {"User-Agent": "NeverlandMuseumIntake/1.0 (open-access download; contact via GitHub msfits20)"}
-def g(u, **kw):
-    try: return requests.get(u, headers={**UA, **kw.pop("headers", {})}, timeout=90, **kw)
-    except Exception as e: print("   ERR", u[:120], str(e)[:120]); return None
-# key from the database (same token the intake uses)
-key = None
-try:
-    c = json.loads(os.environ["NEVERLAND_READ"])
-    r = requests.post(c["db_url"] + "/rest/v1/rpc/intake_get_config", json={"p_token": c["db_token"], "p_key": "si_api_key"}, headers={"apikey": c["db_key"], "Content-Type": "application/json"}, timeout=60)
-    key = r.json() if r.status_code == 200 else None; print("SI key from db:", bool(key), r.status_code)
-except Exception as e: print("SI key ERR", e)
-# Mia image URLs
-for u in ["https://api.artsmia.org/images/529/large.jpg", "https://api.artsmia.org/images/529/full.jpg", "https://1.api.artsmia.org/800/529.jpg", "https://iiif.artsmia.org/529.jpg/info.json", "https://iiif.dx.artsmia.org/529/info.json", "https://collections.artsmia.org/art/529"]:
-    r = g(u)
-    if r is not None: print("MIA img", u, r.status_code, r.headers.get("content-type"), len(r.content), re.findall(r"https?://[^\"' ]*(?:iiif|images|api\.artsmia)[^\"' ]*", r.text)[:6] if "html" in (r.headers.get("content-type") or "") else "")
-r = g("https://search.artsmia.org/public_access:1%20image:valid?size=2&from=20000"); print("MIA deep", r.status_code if r is not None else None, r.text[:200] if r is not None else "")
-# Smithsonian
-if key:
-    for q in ['online_media_type:"Images" AND unit_code:(SAAM OR NPG OR FSG OR CHNDM OR HMSG) AND media_usage:CC0', 'unit_code:SAAM AND online_media_type:"Images"']:
-        r = g("https://api.si.edu/openaccess/api/v1.0/search", params={"q": q, "rows": 1, "api_key": key})
-        if r is not None:
-            j = r.json(); print("SI", q, r.status_code, (j.get("response") or {}).get("rowCount"))
-            rows = (j.get("response") or {}).get("rows") or []
-            if rows: print("SI row", json.dumps(rows[0])[:2500])
-# Getty
-a = g("https://data.getty.edu/museum/collection/activity-stream")
-if a is not None:
-    a = a.json(); print("GETTY stream keys", list(a.keys()), json.dumps(a.get("first") or a.get("last"))[:200], a.get("totalItems"))
-    p = g((a.get("last") or {}).get("id", ""))
-    if p is not None:
-        items = p.json().get("orderedItems", [])
-        objs = [it["object"]["id"] for it in items if it.get("object", {}).get("type") == "HumanMadeObject"][:1]
-        for o in objs:
-            j = g(o).json(); print("GETTY obj", json.dumps({k: j.get(k) for k in ["_label", "classified_as", "representation", "subject_to", "referred_to_by"]})[:3000])
+"""Probe candidate open-access sources from GitHub's network (read-only, 20 Nov 2026)."""
+import requests, json, time
+S = requests.Session(); S.headers["User-Agent"] = "NeverlandMuseumIntake/1.0 (open-access download; contact via GitHub msfits20)"
+def get(u, **kw):
+    try:
+        r = S.get(u, timeout=60, **kw); return r
+    except Exception as e:
+        print("  ERR", u[:120], e); return None
+def head_img(u):
+    r = get(u, stream=True)
+    if r is None: return "ERR"
+    n = 0
+    for c in r.iter_content(1 << 16):
+        n += len(c)
+        if n > 3 << 20: break
+    return "%s %s %s+ bytes" % (r.status_code, r.headers.get("Content-Type"), n)
+
+print("== Mia (Minneapolis)")
+r = get("https://search.artsmia.org/public_access:1%20AND%20classification:Paintings%20AND%20image:valid?size=3")
+if r is not None:
+    print(" ", r.status_code, r.text[:300].replace("\n", " "))
+    try:
+        j = r.json(); print("  total", j.get("hits", {}).get("total"))
+        h = j["hits"]["hits"][0]["_source"]; print("  sample", h.get("id"), h.get("title"), h.get("artist"), h.get("image_width"), h.get("image_height"), h.get("rights_type"), h.get("restricted"))
+        for u in ("https://api.artsmia.org/images/%s/full/full/0/default.jpg" % h["id"], "https://iiif.dx.artsmia.org/%s.jpg/info.json" % h["id"]):
+            print("  img", u, head_img(u))
+    except Exception as e: print("  parse", e)
+
+print("== Library of Congress (posters)")
+r = get("https://www.loc.gov/pictures/search/?q=poster&fo=json&c=3")
+print(" ", r.status_code if r is not None else None, (r.text[:200] if r is not None else "").replace("\n"," "))
+r = get("https://www.loc.gov/collections/works-progress-administration-posters/?fo=json&c=3")
+if r is not None:
+    print(" ", r.status_code)
+    try:
+        j = r.json(); print("  total", j.get("pagination", {}).get("of"))
+        it = j["results"][0]; print("  sample", it.get("title"), it.get("rights", "")[:80] if isinstance(it.get("rights"), str) else it.get("rights"), (it.get("image_url") or [])[-1:] )
+    except Exception as e: print("  parse", e)
+
+print("== Europeana (api2demo)")
+r = get("https://api.europeana.eu/record/v2/search.json", params={"wskey": "api2demo", "query": "what:painting", "qf": ["TYPE:IMAGE", "IMAGE_SIZE:extra_large", "RIGHTS:*publicdomain*"], "rows": 3, "profile": "rich", "cursor": "*"})
+if r is not None:
+    print(" ", r.status_code, r.text[:200].replace("\n"," "))
+    try:
+        j = r.json(); print("  total", j.get("totalResults"))
+        it = j["items"][0]; print("  sample", it.get("title"), it.get("dcCreator"), it.get("dataProvider"), it.get("rights"), it.get("edmIsShownBy"))
+        if it.get("edmIsShownBy"): print("  img", head_img(it["edmIsShownBy"][0]))
+    except Exception as e: print("  parse", e)
+
+print("== Getty")
+r = get("https://data.getty.edu/museum/collection/activity-stream")
+print(" ", r.status_code if r is not None else None, (r.text[:300] if r is not None else "").replace("\n"," "))
+
+print("== Nationalmuseum Sweden")
+r = get("https://api.nationalmuseum.se/api/objects?limit=2")
+print(" ", r.status_code if r is not None else None, (r.text[:200] if r is not None else "").replace("\n"," "))
+
+print("== Paris Musees (no token)")
+r = get("https://apicollections.parismusees.paris.fr/graphql")
+print(" ", r.status_code if r is not None else None)
+
+print("== Harvard (no key)")
+r = get("https://api.harvardartmuseums.org/object?size=1")
+print(" ", r.status_code if r is not None else None, (r.text[:120] if r is not None else ""))
