@@ -419,10 +419,12 @@ def src_aic():
                 if not r.get("image_id"):
                     continue
                 th = r.get("thumbnail") or {}
+                # 21 Nov 2026 (probe 9): AIC's IIIF allowlist refuses tiles and most sizes (that was the "GitHub
+                # block"), but serves /full/3000,/ (also 1686, 843). 3000 px wide clears MIN_LONG.
                 yield {"src": "aic", "id": str(r["id"]), "artist": r.get("artist_title") or "",
                        "title": r.get("title"), "date": r.get("date_display") or "",
-                       "kind": t.lower(), "w": int(th.get("width") or 0), "h": int(th.get("height") or 0),
-                       "url": None, "iiif": "https://www.artic.edu/iiif/2/%s" % r["image_id"],
+                       "kind": t.lower(), "w": 0, "h": 0,
+                       "url": "https://www.artic.edu/iiif/2/%s/full/3000,/0/default.jpg" % r["image_id"],
                        "page": "https://www.artic.edu/artworks/%s" % r["id"],
                        "license": "CC0 (Art Institute of Chicago)"}
             page += 1
@@ -1194,7 +1196,8 @@ SRC = {"nga": src_nga, "met": src_met, "cleveland": src_cleveland, "aic": src_ai
 # ----------------------------------------------------------------- main --
 # 20 Nov 2026: upload.wikimedia.org answered 429 to 5,964 of ~6,000 'gap' downloads
 # (8 workers, no pacing, no retry). Space requests per host and honour Retry-After.
-_HOST_GAP = {"upload.wikimedia.org": float(os.environ.get("WIKI_GAP", "1.0"))}
+_HOST_GAP = {"upload.wikimedia.org": float(os.environ.get("WIKI_GAP", "1.0")),
+             "www.artic.edu": 1.2}   # AIC asks for <= 60 requests a minute
 _host_lock, _host_next = threading.Lock(), {}
 
 

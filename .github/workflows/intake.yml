@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [artvee, gap, wikidata, europeana, ycba]   # 21 Nov (Tobi: fill the free ~3 TB, paintings first): si and rijks dropped (0 new in 24 h, exhausted); gap (20 Nov): Google Art Project paintings on Commons; fng, wellcome, smk, nga, met, cleveland finished; aic dropped 18 Nov (blocks GitHub; run it from Render or the Mac)
+        part: [artvee, gap, wikidata, europeana, ycba, aic]   # 21 Nov (Tobi: fill the free ~3 TB, paintings first): aic back (fixed: fixed 3000px size, see src_aic); si and rijks dropped (0 new in 24 h, exhausted); gap (20 Nov): Google Art Project paintings on Commons; fng, wellcome, smk, nga, met, cleveland finished; aic dropped 18 Nov (blocks GitHub; run it from Render or the Mac)
         shard: [0, 1, 2]                   # 16 Nov 2026: each source in 3 parts at once
         include:                           # 21 Nov: Wikidata (~371k public-domain paintings, most famous first) is the biggest painting pool: 6 parts
           - {part: wikidata, shard: 3}
