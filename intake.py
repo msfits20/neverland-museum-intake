@@ -431,6 +431,41 @@ def src_aic():
             time.sleep(1)
 
 
+# --------------------------------------------- Minneapolis Institute of Art --
+# 21 Nov 2026 (Tobi: fill the drive, paintings first). Mia marks public-domain works CC PDM: "You can copy,
+# modify, distribute and perform the works, even for commercial purposes, all without asking permission"
+# (new.artsmia.org/copyright-and-image-access). Search API = Elasticsearch, no key. Full-size file:
+# img.artsmia.org/web_objects_cache/<Cache_Location>/<rendition>_full.jpg (masters often 5,000-9,600 px).
+MIA_CLASSES = [x for x in os.environ.get("MIA_CLASSES", "Paintings,Drawings,Prints").split(",") if x]
+
+
+def src_mia():
+    for cls in MIA_CLASSES:
+        frm = 0
+        while not STOP.is_set() and frm < 10000:      # Elasticsearch result window
+            j = get_json('https://search.artsmia.org/rights_type:"Public Domain" AND classification:%s' % cls,
+                         params={"size": 100, "from": frm})
+            hits = ((j or {}).get("hits") or {}).get("hits") or []
+            if not hits:
+                break
+            for h in hits:
+                x = h.get("_source") or {}
+                cache, rend = str(x.get("Cache_Location") or "").replace("\\", "/").strip("/"), str(x.get("Primary_RenditionNumber") or "")
+                if x.get("rights_type") != "Public Domain" or x.get("image") != "valid" or not cache or not rend:
+                    continue
+                w, hgt = int(x.get("image_width") or 0), int(x.get("image_height") or 0)
+                if w and hgt and max(w, hgt) < MIN_LONG:
+                    continue
+                artist = re.sub(r";\s*(Publisher|Printer|Engraver|Designer).*$", "", x.get("artist") or "").strip()
+                yield {"src": "mia", "id": str(x.get("id")), "artist": artist, "title": x.get("title") or "",
+                       "date": x.get("dated") or "", "kind": cls.lower().rstrip("s"), "w": w, "h": hgt,
+                       "url": "https://img.artsmia.org/web_objects_cache/%s/%s_full.jpg" % (cache, re.sub(r"\.jpe?g$", "", rend, flags=re.I)),
+                       "page": "https://collections.artsmia.org/art/%s" % x.get("id"),
+                       "license": "Public Domain Mark (Minneapolis Institute of Art)"}
+            frm += len(hits)
+            time.sleep(0.5)
+
+
 # ----------------------------------------------------------- Rijksmuseum --
 # 17 Nov 2026. Data Services search API (no key) -> Linked Art object records.
 # Images on iiif.micr.io, public domain (PDM/CC0). Order: paintings, posters,
@@ -1190,7 +1225,7 @@ def src_wikidata():
 
 SRC = {"nga": src_nga, "met": src_met, "cleveland": src_cleveland, "aic": src_aic, "rijks": src_rijks, "smk": src_smk,
        "fng": src_fng, "ycba": src_ycba, "wellcome": src_wellcome, "si": src_si, "europeana": src_europeana,
-       "gap": src_gap, "artvee": src_artvee, "wikidata": src_wikidata}  # gap = Google Art Project on Commons, 20 Nov 2026  # fng/ycba/wellcome added 18 Nov 2026
+       "gap": src_gap, "artvee": src_artvee, "wikidata": src_wikidata, "mia": src_mia}  # gap = Google Art Project on Commons, 20 Nov 2026  # fng/ycba/wellcome added 18 Nov 2026
 
 
 # ----------------------------------------------------------------- main --
