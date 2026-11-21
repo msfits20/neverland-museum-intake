@@ -1063,9 +1063,132 @@ def iiif_image(base, w=0, h=0):
     return out
 
 
+
+# ── Wikidata paintings with a Commons picture (21 Nov 2026) ─────────────────────────────────────────
+# The open museums are nearly harvested. Wikidata lists ~500k+ paintings with a Wikimedia Commons image
+# (P18), many from museums with no open API (Uffizi, Prado, Hermitage...). Most famous first (sitelinks).
+# Public domain only: the painter died by 1955, or (no death date known) the painting dates from <= 1900;
+# Commons' own licence must also say public domain. Same dedupe/review as every other part.
+WD_SPARQL = "https://query.wikidata.org/sparql"
+WD_API = "https://www.wikidata.org/w/api.php"
+WD_PAGE = int(os.environ.get("WD_PAGE", "25000"))
+
+
+def _wd_sparql(q):
+    for i in range(6):
+        try:
+            r = S.post(WD_SPARQL, data={"query": q}, timeout=320,
+                       headers={"Accept": "application/sparql-results+json"})
+            if r.status_code == 200:
+                return r.json()["results"]["bindings"]
+            if r.status_code in (429, 500, 502, 503, 504):
+                time.sleep(30 * (i + 1))
+                continue
+            raise RuntimeError("SPARQL HTTP %s" % r.status_code)
+        except (requests.RequestException, ValueError):
+            time.sleep(30 * (i + 1))
+    return None
+
+
+def _wd_list():
+    """[(sitelinks, qid, commons file title, death year, inception year)], most famous first."""
+    rows, off = {}, 0
+    while not STOP.is_set():
+        q = """SELECT ?item ?img ?sl ?death ?inc WHERE {
+  ?item wdt:P31 wd:Q3305213; wdt:P18 ?img; wikibase:sitelinks ?sl.
+  OPTIONAL { ?item wdt:P170 ?c. ?c wdt:P570 ?death. }
+  OPTIONAL { ?item wdt:P571 ?inc. }
+} LIMIT %d OFFSET %d""" % (WD_PAGE, off)
+        b = _wd_sparql(q)
+        if b is None:
+            log("Wikidata: page at offset %d failed, stopping the list there" % off)
+            break
+        for x in b:
+            qid = x["item"]["value"].rsplit("/", 1)[-1]
+            yr = lambda k: int(x[k]["value"][:5].lstrip("+")[:4]) if k in x and re.match(r"^[+-]?\d{4}", x[k]["value"]) else None
+            d, inc = yr("death"), yr("inc")
+            f = requests.utils.unquote(x["img"]["value"].rsplit("/", 1)[-1]).replace("_", " ")
+            old = rows.get(qid)
+            death = max(filter(None, [d, old and old[3]]), default=None)   # several creators: the last to die decides
+            rows[qid] = (int(x["sl"]["value"]), qid, "File:" + f, death, inc if inc else (old and old[4]))
+        log("Wikidata: %d paintings listed (offset %d)" % (len(rows), off))
+        if len(b) < WD_PAGE:
+            break
+        off += WD_PAGE
+        time.sleep(5)
+    ok = [r for r in rows.values() if (r[3] is not None and r[3] <= 1955) or (r[3] is None and r[4] is not None and r[4] <= 1900)]
+    ok.sort(key=lambda r: -r[0])
+    log("Wikidata: %d of %d are public domain by date; most famous first" % (len(ok), len(rows)))
+    return ok
+
+
+def _wd_labels(qids):
+    """qid -> (title, creator qids, date text)."""
+    out = {}
+    j = get_json(WD_API, params={"action": "wbgetentities", "format": "json", "ids": "|".join(qids),
+                                 "props": "labels|claims", "languages": "en|fr|de|nl|es|it|sv|ru"})
+    for q, e in ((j or {}).get("entities") or {}).items():
+        lab = e.get("labels") or {}
+        title = next((lab[l]["value"] for l in ("en", "fr", "de", "nl", "es", "it", "sv", "ru") if l in lab), "")
+        cl = e.get("claims") or {}
+        cre = [c["mainsnak"].get("datavalue", {}).get("value", {}).get("id") for c in cl.get("P170", [])]
+        inc = [c["mainsnak"].get("datavalue", {}).get("value", {}).get("time", "") for c in cl.get("P571", [])]
+        y = re.match(r"^[+-]?(\d{4})", inc[0]) if inc else None
+        out[q] = (title, [c for c in cre if c], y.group(1).lstrip("0") if y else "")
+    return out
+
+
+def _wd_names(qids):
+    j = get_json(WD_API, params={"action": "wbgetentities", "format": "json", "ids": "|".join(qids),
+                                 "props": "labels", "languages": "en|fr|de|nl|es|it"}) if qids else None
+    out = {}
+    for q, e in ((j or {}).get("entities") or {}).items():
+        lab = e.get("labels") or {}
+        out[q] = next((lab[l]["value"] for l in ("en", "fr", "de", "nl", "es", "it") if l in lab), "")
+    return out
+
+
+def src_wikidata():
+    lst = _wd_list()
+    for i in range(0, len(lst), 50):
+        if STOP.is_set():
+            return
+        batch = lst[i:i + 50]
+        # only this shard's items cost API calls (the main loop also filters by shard)
+        batch = [r for r in batch if SHARD_N <= 1 or int(hashlib.md5(("wd:" + r[1]).encode()).hexdigest(), 16) % SHARD_N == SHARD_I]
+        if not batch:
+            continue
+        labels = _wd_labels([r[1] for r in batch])
+        names = _wd_names(sorted({c for v in labels.values() for c in v[1][:1]}))
+        info = get_json(GAP_API, params={"action": "query", "format": "json", "titles": "|".join(r[2] for r in batch),
+                                         "prop": "imageinfo", "iiprop": "url|size|mime|extmetadata"})
+        pages = {p.get("title", "").replace("_", " "): p for p in (((info or {}).get("query") or {}).get("pages") or {}).values()}
+        norm = {n["from"]: n["to"] for n in (((info or {}).get("query") or {}).get("normalized") or [])}
+        for sl, qid, ftitle, death, inc in batch:
+            p = pages.get(norm.get(ftitle, ftitle))
+            ii = ((p or {}).get("imageinfo") or [{}])[0]
+            if ii.get("mime") not in ("image/jpeg", "image/png", "image/tiff"):
+                continue
+            lic = _gap_strip(((ii.get("extmetadata") or {}).get("LicenseShortName") or {}).get("value"))
+            if not GAP_PD.match(lic):
+                continue
+            title, cre, year = labels.get(qid, ("", [], ""))
+            if not title or re.match(r"^Q\d+$", title):
+                continue
+            artist = names.get(cre[0], "") if cre else ""
+            if not artist or re.search(r"unknown|anonym", artist, re.I):
+                artist = "Anonymous"
+            if GAP_NOT_ART.search(title):
+                continue
+            yield {"src": "wd", "id": qid, "artist": artist[:120], "title": title[:250], "date": year, "kind": "painting",
+                   "w": int(ii.get("width") or 0), "h": int(ii.get("height") or 0), "url": ii.get("url"),
+                   "page": "https://www.wikidata.org/wiki/" + qid, "license": "Public domain (Wikimedia Commons, via Wikidata)"}
+        time.sleep(0.5)
+
+
 SRC = {"nga": src_nga, "met": src_met, "cleveland": src_cleveland, "aic": src_aic, "rijks": src_rijks, "smk": src_smk,
        "fng": src_fng, "ycba": src_ycba, "wellcome": src_wellcome, "si": src_si, "europeana": src_europeana,
-       "gap": src_gap, "artvee": src_artvee}  # gap = Google Art Project on Commons, 20 Nov 2026  # fng/ycba/wellcome added 18 Nov 2026
+       "gap": src_gap, "artvee": src_artvee, "wikidata": src_wikidata}  # gap = Google Art Project on Commons, 20 Nov 2026  # fng/ycba/wellcome added 18 Nov 2026
 
 
 # ----------------------------------------------------------------- main --

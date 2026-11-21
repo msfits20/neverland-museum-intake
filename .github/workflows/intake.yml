@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [artvee, gap, europeana, si, ycba, rijks]   # gap (20 Nov): Google Art Project paintings on Commons, rarer famous works   # 20 Nov: only museums still adding images; fng, wellcome, smk, nga, met, cleveland finished (each part reloads the catalog index, which loads the busy database); aic dropped 18 Nov (blocks GitHub)
+        part: [artvee, gap, wikidata, europeana, si, ycba, rijks]   # gap (20 Nov): Google Art Project paintings on Commons, rarer famous works   # 20 Nov: only museums still adding images; fng, wellcome, smk, nga, met, cleveland finished (each part reloads the catalog index, which loads the busy database); aic dropped 18 Nov (blocks GitHub)
         shard: [0, 1, 2]                   # 16 Nov 2026: each museum in 3 parts at once (12 jobs)
     steps:
       - uses: actions/checkout@v4
