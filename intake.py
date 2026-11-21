@@ -466,6 +466,56 @@ def src_mia():
             time.sleep(0.5)
 
 
+# ------------------------------------------------------ Library of Congress --
+# 21 Nov 2026, STANDBY source (starts only when the others run low, see standby_waits). Wall-art collections only.
+# Rights: each item's rights_advisory must say no known restrictions (checked per item). Full size via the LoC
+# IIIF server built from the image path (tile.loc.gov/storage-services/service/pnp/<coll>/<dirs>/<id>r.jpg ->
+# tile.loc.gov/image-services/iiif/service:pnp:<coll>:<dirs>:<id>/full/pct:100/0/default.jpg).
+LOC_COLLS = [x for x in os.environ.get("LOC_COLLECTIONS", "works-progress-administration-posters,fine-prints-japanese-pre-1915,"
+             "artist-posters,cabinet-of-american-illustration,popular-graphic-arts,panoramic-maps").split(",") if x]
+LOC_OK = re.compile(r"no known restrictions|public domain|free to use", re.I)
+
+
+def _loc_iiif(u):
+    m = re.search(r"tile\.loc\.gov/storage-services/service/(.+?)([a-z])?\.(?:jpg|gif|tif)", u or "")
+    if not m:
+        return None
+    return "https://tile.loc.gov/image-services/iiif/service:%s/full/pct:100/0/default.jpg" % m.group(1).replace("/", ":")
+
+
+def src_loc():
+    for coll in LOC_COLLS:
+        page = 1
+        while not STOP.is_set():
+            j = get_json("https://www.loc.gov/collections/%s/" % coll, params={"fo": "json", "c": 100, "sp": page,
+                                                                               "at": "pagination,results"})
+            res = (j or {}).get("results") or []
+            if not res:
+                break
+            for r in res:
+                if "item" not in str(r.get("id") or ""):
+                    continue
+                full = next((x for x in map(_loc_iiif, reversed(r.get("image_url") or [])) if x), None)
+                if not full:
+                    continue
+                it = get_json(r["id"], params={"fo": "json", "at": "item"}) or {}
+                item = it.get("item") or {}
+                rights = " ".join(item.get("rights_advisory") or []) if isinstance(item.get("rights_advisory"), list) else str(item.get("rights_advisory") or "")
+                if not LOC_OK.search(rights):
+                    continue
+                who = item.get("contributor_names") or item.get("creator") or r.get("contributor") or []
+                artist = (who[0] if isinstance(who, list) and who else str(who or "")) or "Anonymous"
+                yield {"src": "loc", "id": r["id"].rstrip("/").rsplit("/", 1)[-1], "artist": re.sub(r",\s*\d{4}.*$", "", artist)[:120],
+                       "title": re.sub(r"\s*/\s*$", "", str(r.get("title") or ""))[:250], "date": str(r.get("date") or ""),
+                       "kind": "poster" if "poster" in coll else "print", "w": 0, "h": 0, "url": full,
+                       "page": r["id"], "license": "No known restrictions (Library of Congress)"}
+                time.sleep(0.4)
+            pg = (j or {}).get("pagination") or {}
+            if not pg.get("next"):
+                break
+            page += 1
+
+
 # ----------------------------------------------------------- Rijksmuseum --
 # 17 Nov 2026. Data Services search API (no key) -> Linked Art object records.
 # Images on iiif.micr.io, public domain (PDM/CC0). Order: paintings, posters,
@@ -1225,7 +1275,7 @@ def src_wikidata():
 
 SRC = {"nga": src_nga, "met": src_met, "cleveland": src_cleveland, "aic": src_aic, "rijks": src_rijks, "smk": src_smk,
        "fng": src_fng, "ycba": src_ycba, "wellcome": src_wellcome, "si": src_si, "europeana": src_europeana,
-       "gap": src_gap, "artvee": src_artvee, "wikidata": src_wikidata, "mia": src_mia}  # gap = Google Art Project on Commons, 20 Nov 2026  # fng/ycba/wellcome added 18 Nov 2026
+       "gap": src_gap, "artvee": src_artvee, "wikidata": src_wikidata, "mia": src_mia, "loc": src_loc}  # gap = Google Art Project on Commons, 20 Nov 2026  # fng/ycba/wellcome added 18 Nov 2026
 
 
 # ----------------------------------------------------------------- main --

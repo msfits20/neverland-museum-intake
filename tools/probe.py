@@ -53,3 +53,11 @@ for u in ("https://www.webumenia.sk/api/items?size=1", "https://www.webumenia.sk
 print("=== Walters")
 c, r = get("https://api.github.com/repos/WaltersArtMuseum/api-thewalters-org/contents")
 print("walters repo", c, (r.text[:800].replace("\n", " ") if r is not None else ""))
+
+print("=== src_loc sample (standby provider)")
+import itertools, sys
+sys.path.insert(0, ".")
+import intake
+for it in itertools.islice(intake.src_loc(), 3):
+    c, r = get(it["url"])
+    print(it["id"], it["title"][:60], "|", it["artist"], "|", c, len(r.content) if c == 200 else "")
