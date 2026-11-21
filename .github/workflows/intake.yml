@@ -34,8 +34,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [artvee, gap, wikidata, europeana, si, ycba, rijks]   # gap (20 Nov): Google Art Project paintings on Commons, rarer famous works   # 20 Nov: only museums still adding images; fng, wellcome, smk, nga, met, cleveland finished (each part reloads the catalog index, which loads the busy database); aic dropped 18 Nov (blocks GitHub)
-        shard: [0, 1, 2]                   # 16 Nov 2026: each museum in 3 parts at once (12 jobs)
+        part: [artvee, gap, wikidata, europeana, ycba]   # 21 Nov (Tobi: fill the free ~3 TB, paintings first): si and rijks dropped (0 new in 24 h, exhausted); gap (20 Nov): Google Art Project paintings on Commons; fng, wellcome, smk, nga, met, cleveland finished; aic dropped 18 Nov (blocks GitHub; run it from Render or the Mac)
+        shard: [0, 1, 2]                   # 16 Nov 2026: each source in 3 parts at once
+        include:                           # 21 Nov: Wikidata (~371k public-domain paintings, most famous first) is the biggest painting pool: 6 parts
+          - {part: wikidata, shard: 3}
+          - {part: wikidata, shard: 4}
+          - {part: wikidata, shard: 5}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -72,7 +76,7 @@ jobs:
           SOURCES: ${{ matrix.part }}
           STATE_FILE: state-${{ matrix.part }}-${{ matrix.shard }}.json
           PARENT_STATE: state-${{ matrix.part }}.json
-          SHARD_N: "3"
+          SHARD_N: ${{ matrix.part == 'wikidata' && '6' || '3' }}
           SHARD_I: ${{ matrix.shard }}
           WORKERS: "10"
           FLOOR_GB: ${{ vars.FLOOR_GB || '150' }}
