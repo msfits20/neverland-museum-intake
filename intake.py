@@ -1326,7 +1326,9 @@ class Run:
     def _handle(self, it):
         if self.should_stop():
             return
-        if SHARD_N > 1 and int(hashlib.md5((it["src"] + ":" + str(it["id"])).encode()).hexdigest(), 16) % SHARD_N != SHARD_I:
+        # artvee rows are already split between parts by the database (artvee_take, hashtext); a second md5 split
+        # here threw away ~2/3 of the signed links (21 Nov 2026 fix)
+        if SHARD_N > 1 and it["src"] != "artvee" and int(hashlib.md5((it["src"] + ":" + str(it["id"])).encode()).hexdigest(), 16) % SHARD_N != SHARD_I:
             return  # another part of this museum handles it
         done = self.state.setdefault(it["src"], set())
         if it["src"] == "rijks" and it["title"] is None:
