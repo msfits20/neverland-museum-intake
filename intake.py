@@ -1613,9 +1613,38 @@ def legacy_blocks(d):
     return busy if any(s in ORDER and ORDER.index(s) >= ORDER.index(busy) for s in SOURCES) else None
 
 
+# 21 Nov 2026 (Tobi: "They should start right after you've truly exhausted the rest ... As long as there's space
+# in that drive, I never wanna hear that we're out of images"). Standby sources are built and in the workflow,
+# but each part starts only when every other source together has produced fewer than STANDBY_MIN reviewed
+# files in the last 24 h. Once on, it stays on while the others stay low (standby output isn't counted).
+STANDBY = {x for x in os.environ.get("STANDBY_SOURCES", "loc,getty,webumenia,walters").split(",") if x}
+STANDBY_MIN = int(os.environ.get("STANDBY_MIN", "3000"))
+
+
+def standby_waits():
+    mine = set(SOURCES) & STANDBY
+    if not mine or os.environ.get("STANDBY_FORCE") == "1" or DRY or LIMIT:
+        return False
+    import catalog as catalog_mod
+    try:
+        n = catalog_mod._rpc(json.loads(os.environ["NEVERLAND_READ"]), "intake_recent_count",
+                             p_hours=24, p_exclude=sorted(STANDBY))
+    except Exception as e:
+        log("Standby check failed (%s) - waiting for the next run" % str(e)[:80])
+        return True
+    if n >= STANDBY_MIN:
+        log("Standby source %s: the other sources produced %d files in 24 h (>= %d) - not needed yet."
+            % (",".join(sorted(mine)), n, STANDBY_MIN))
+        return True
+    log("Standby source %s starting: the other sources produced only %d files in 24 h." % (",".join(sorted(mine)), n))
+    return False
+
+
 def main():
     if os.environ.get("PAUSED") == "1":
         log("Paused (repository variable PAUSED=1). Nothing to do.")
+        return
+    if standby_waits():
         return
     with gzip.open(os.path.join(os.path.dirname(__file__), "known_keys.txt.gz"), "rt") as fh:
         known = set(fh.read().split())

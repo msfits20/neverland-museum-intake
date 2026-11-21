@@ -8,8 +8,8 @@ prio desc):
   2  paintings and other sellable subjects (title words)
   1  everything else
   0  numbered scientific plates ("1. Chaetodon …", "Pl. 12", "Fig. 3")
-Never marks a work 'known' on a weak match: needs artist+title keys, or a title of 4+ words found in the
-catalog. Run: Actions -> "Artvee prefilter" (also daily). Safe to re-run.
+Never marks a work 'known' on a weak match: needs artist+title keys, or a title of 5+ words found in the
+catalog (5+ words, single version). Run: Actions -> "Artvee prefilter" (also daily). Safe to re-run.
 """
 import gzip, hashlib, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -47,7 +47,7 @@ def main():
         name = r.get("name") or ""
         cat_keys.update(intake.keys(artist, name))
         t = intake.norm(name)
-        if len(t.split()) >= 4:
+        if len(t.split()) >= 5:
             cat_titles.add(t)
     print("catalog rows %d, keys %d, long titles %d, known_keys %d, not-owned list %d"
           % (len(rows), len(cat_keys), len(cat_titles), len(known_keys), len(not_owned)))
@@ -73,7 +73,9 @@ def main():
                 prio, known = 3, False
             else:
                 known = bool(artist) and any(k in known_keys or k in cat_keys for k in intake.keys(artist, title))
-                known = known or (len(t.split()) >= 4 and t in cat_titles)
+                # title alone only for 5+ word titles Artvee has one version of (no "-8" slug suffix):
+                # "The Resurrection of Christ" exists by dozens of artists
+                known = known or (not re.search(r"-\d+$", row["slug"]) and len(t.split()) >= 5 and t in cat_titles)
                 prio = 0 if PLATE.search(t) else 2 if SELLABLE.search(t) else 1
             if known:
                 stats["known"] += 1
