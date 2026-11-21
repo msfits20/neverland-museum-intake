@@ -1378,10 +1378,10 @@ class Run:
         prov = "%s:%s" % (it["src"], str(it["id"]).split("_")[0] if it["src"] == "europeana" else "")
         with LOCK:
             pst = PROV.setdefault(prov, [0, 0])
-            if pst[0] >= 30 and pst[1] == 0:
-                if pst[0] == 30:
-                    log("  skipping provider %s for the rest of this run (30 failures, no success)" % prov)
-                    pst[0] += 1
+            if pst[0] >= 30 and pst[1] * 20 < pst[0]:  # under ~5% success after 30+ failures
+                if len(pst) == 2:
+                    log("  skipping provider %s for the rest of this run (%d failures, %d saved)" % (prov, pst[0], pst[1]))
+                    pst.append(True)
                 return
         try:
             im, data = fetch_image(it)
