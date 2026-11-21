@@ -1,0 +1,34 @@
+name: Artvee prefilter
+# 21 Nov 2026: mark Artvee queue works the catalog already has before the browser signs them, and put the
+# most sellable first (tools/artvee_prefilter.py). Daily, plus on demand.
+on:
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "1 = report only"
+        default: "0"
+permissions:
+  contents: read
+jobs:
+  prefilter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q pillow imagehash requests numpy opencv-python-headless
+      - run: echo "HOUR=$(date -u +%Y%m%d%H)" >> "$GITHUB_ENV"
+      - uses: actions/cache/restore@v4
+        with:
+          path: catalog_index.json.gz
+          key: catalog-index-${{ env.HOUR }}
+          restore-keys: catalog-index-
+      - name: Prefilter the Artvee queue
+        env:
+          NEVERLAND_READ: ${{ secrets.NEVERLAND_READ }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
+        run: python tools/artvee_prefilter.py
