@@ -40,6 +40,18 @@ jobs:
           - {part: wikidata, shard: 3}
           - {part: wikidata, shard: 4}
           - {part: wikidata, shard: 5}
+        # 21 Nov 15:55: GitHub runs 20 jobs at once; 24 parts left "Intake review" queued for hours (downloads weren't
+        # becoming products). Small or rate-limited sources run as ONE part (SHARD_N 1), Artvee as 2: 15 parts in all, + 4 review = 19.
+        exclude:
+          - {part: artvee, shard: 2}       # 2 Artvee downloaders keep up with the browser signer (~470/h)
+          - {part: europeana, shard: 1}
+          - {part: europeana, shard: 2}
+          - {part: ycba, shard: 1}
+          - {part: ycba, shard: 2}
+          - {part: aic, shard: 1}
+          - {part: aic, shard: 2}
+          - {part: mia, shard: 1}
+          - {part: mia, shard: 2}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -76,7 +88,7 @@ jobs:
           SOURCES: ${{ matrix.part }}
           STATE_FILE: state-${{ matrix.part }}-${{ matrix.shard }}.json
           PARENT_STATE: state-${{ matrix.part }}.json
-          SHARD_N: ${{ matrix.part == 'wikidata' && '6' || '3' }}
+          SHARD_N: ${{ matrix.part == 'wikidata' && '6' || (contains(fromJSON('["europeana","ycba","aic","mia"]'), matrix.part) && '1' || (matrix.part == 'artvee' && '2' || '3')) }}
           SHARD_I: ${{ matrix.shard }}
           WORKERS: "10"
           FLOOR_GB: ${{ vars.FLOOR_GB || '150' }}
