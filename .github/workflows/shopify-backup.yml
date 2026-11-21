@@ -1,9 +1,8 @@
 name: Shopify unused files backup to Drive
 # 21 Nov 2026 (Tobi: back up unused Shopify files to Drive before deleting them). Step 2 of the relay in
 # neverland-prints-brain src/scripts/storage-free.js. Copies staged files to Drive, checks sizes, writes manifest.csv.
+# 21 Nov 12:40 Lagos: cleanup finished (1763 files backed up and deleted, 0.20 GB). Schedule removed; run by hand if needed.
 on:
-  schedule:
-    - cron: "*/20 * * * *"
   workflow_dispatch:
 concurrency:
   group: shopify-backup
