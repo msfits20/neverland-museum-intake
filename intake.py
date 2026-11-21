@@ -1006,8 +1006,8 @@ def src_artvee():
         prev = [r["slug"] for r in rows]
         if not rows:
             idle += 1
-            if idle > 30:          # 30 min with nothing signed: the browser isn't running; stop for now
-                log("Artvee: no signed links for 30 min - stopping (the browser signer may be off)")
+            if idle > 240:         # 21 Nov: wait up to 4 h for the browser signer (it pauses 20 min-2 h on blocks); was 30 min, which left signed links idle
+                log("Artvee: no signed links for 4 h - stopping (the browser signer may be off)")
                 return
             time.sleep(60)
             continue
