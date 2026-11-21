@@ -1,0 +1,25 @@
+name: Shopify unused files backup to Drive
+# 21 Nov 2026 (Tobi: back up unused Shopify files to Drive before deleting them). Step 2 of the relay in
+# neverland-prints-brain src/scripts/storage-free.js. Copies staged files to Drive, checks sizes, writes manifest.csv.
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+concurrency:
+  group: shopify-backup
+  cancel-in-progress: false
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests pillow imagehash numpy
+      - name: Copy staged files to Drive
+        env:
+          NEVERLAND_READ: ${{ secrets.NEVERLAND_READ }}
+          GOOGLE_AUTH: ${{ secrets.GOOGLE_AUTH }}
+        run: python shopify_backup.py
