@@ -1021,6 +1021,9 @@ def src_artvee():
                    "url": r["signed_url"], "page": r["url"], "license": "Public domain (Artvee)"}
 
 
+PROV = {}  # provider -> [failures, successes] this run (see _handle)
+
+
 IIIF_TILE = 3800
 
 
@@ -1246,13 +1249,27 @@ class Run:
             with LOCK:
                 self.saved += 1
             return
+        # 21 Nov 2026: one broken provider (e.g. a Europeana dataset whose image server returns
+        # 500 for everything) used to burn the whole run. After 30 failures with no success from
+        # the same provider, skip the rest of its images this run (they're retried next run).
+        prov = "%s:%s" % (it["src"], str(it["id"]).split("_")[0] if it["src"] == "europeana" else "")
+        with LOCK:
+            pst = PROV.setdefault(prov, [0, 0])
+            if pst[0] >= 30 and pst[1] == 0:
+                if pst[0] == 30:
+                    log("  skipping provider %s for the rest of this run (30 failures, no success)" % prov)
+                    pst[0] += 1
+                return
         try:
             im, data = fetch_image(it)
         except Exception as e:
             with LOCK:
                 self.failed += 1
+                PROV[prov][0] += 1
             log("  failed", it["src"], it["id"], str(e)[:80])
             return
+        with LOCK:
+            PROV[prov][1] += 1
         w, h = im.size
         if max(w, h) < MIN_LONG:
             with LOCK:
